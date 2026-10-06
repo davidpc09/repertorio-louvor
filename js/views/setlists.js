@@ -1,4 +1,4 @@
-import { el, clear, field, input, textarea, select, toast, modal, confirmBox, uid, fmtDate, fmtDuration, normalize, pill, emptyState, today, daysBetween } from '../dom.js';
+import { el, clear, field, input, textarea, select, toast, modal, confirmBox, uid, fmtDate, fmtDuration, normalize, pill, emptyState, today, daysBetween, downloadBlob } from '../dom.js';
 import { icon } from '../icons.js';
 import * as store from '../store.js';
 import { go } from '../nav.js';
@@ -31,7 +31,7 @@ export function renderSetlists() {
   const row = (sl) => el('a', { class: 'list-item', href: '#/setlist/' + sl.id },
     el('div', { class: 'grow' },
       el('div', { class: 'title' }, fmtDate(sl.date), sl.time ? ' · ' + sl.time : ''),
-      el('div', { class: 'sub' }, [sl.serviceType, sl.title, sl.items.map((it) => store.findSong(it.songId)?.title).filter(Boolean).join(', ')].filter(Boolean).join(' · '))),
+      el('div', { class: 'sub' }, [sl.serviceType, sl.title, sl.theme ? 'tema: ' + sl.theme : null, sl.items.map((it) => store.findSong(it.songId)?.title).filter(Boolean).join(', ')].filter(Boolean).join(' · '))),
     el('div', { class: 'meta' }, el('span', { class: 'small muted hide-sm' }, `${sl.items.length} músicas`), pill(STATUS_LABEL[sl.status], STATUS_KIND[sl.status])));
 
   return el('div', { class: 'stack', style: { gap: '18px' } },
@@ -55,18 +55,19 @@ function newSetlistDialog() {
   const time = el('input', { type: 'time', value: '18:00' });
   const type = select(s.settings.serviceTypes, 'Domingo noite');
   const title = input({ placeholder: 'Opcional, ex.: Culto de Missões' });
+  const theme = input({ placeholder: 'Opcional, ex.: Gratidão', list: 'new-setlist-themes' });
   const prev = s.setlists.filter((x) => x.ministryId === s.session.ministryId).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10);
   const copyFrom = select([['', 'Começar vazio'], ...prev.map((p) => [p.id, `Copiar de ${fmtDate(p.date, false)} (${p.items.length} músicas)`])], '');
   modal({
     title: 'Novo setlist',
-    body: el('div', { class: 'form-grid' }, field('Data', date), field('Horário', time), field('Tipo de culto', type), field('Título', title), el('div', { class: 'span2' }, field('Modelo', copyFrom))),
+    body: el('div', { class: 'form-grid' }, el('datalist', { id: 'new-setlist-themes' }, s.settings.themes.map((t) => el('option', { value: t }))), field('Data', date), field('Horário', time), field('Tipo de culto', type), field('Título', title), field('Tema', theme), el('div', { class: 'span2' }, field('Modelo', copyFrom))),
     actions: [
       { label: 'Cancelar', kind: 'ghost' },
       { label: 'Criar', kind: 'primary', onClick: () => {
         if (!date.value) { toast('Escolha a data.', 'bad'); return true; }
         const base = s.setlists.find((x) => x.id === copyFrom.value);
         const sl = {
-          id: uid('sl'), ministryId: s.session.ministryId, date: date.value, time: time.value, serviceType: type.value, title: title.value.trim(),
+          id: uid('sl'), ministryId: s.session.ministryId, date: date.value, time: time.value, serviceType: type.value, title: title.value.trim(), theme: theme.value.trim(),
           status: 'rascunho', notes: '', ministerId: store.currentUser().id,
           items: base ? base.items.map((it) => ({ ...it, id: uid('i') })) : [],
           roster: base ? base.roster.map((r) => ({ ...r, id: uid('r'), status: 'pendente' })) : [],
@@ -145,33 +146,30 @@ export function renderSetlistDetail(id) {
     const type = select([...new Set([...s.settings.serviceTypes, sl.serviceType])], sl.serviceType);
     const title = input({ value: sl.title || '' });
     const minister = select([['', '—'], ...store.membersOfMinistry(sl.ministryId).map((m) => [m.id, m.name])], sl.ministerId || '');
-    const notes = textarea({ value: sl.notes || '', style: { minHeight: '60px' } });
-    const saveHead = () => update((x) => { x.date = date.value || x.date; x.time = time.value; x.serviceType = type.value; x.title = title.value.trim(); x.ministerId = minister.value; x.notes = notes.value.trim(); });
-    [date, time, type, title, minister, notes].forEach((f) => f.addEventListener('change', saveHead));
+    const notes = textarea({ value: sl.notes || '', style: { minHeight: '70px' }, placeholder: 'Ex.: ensaio sábado às 16h; chegar 1h antes; roupa preta' });
+    const theme = input({ value: sl.theme || '', list: 'setlist-themes', placeholder: 'Ex.: Gratidão, Santa Ceia, Missões' });
+    const saveHead = () => update((x) => { x.date = date.value || x.date; x.time = time.value; x.serviceType = type.value; x.title = title.value.trim(); x.ministerId = minister.value; x.theme = theme.value.trim(); x.notes = notes.value.trim(); });
+    [date, time, type, title, minister, theme, notes].forEach((f) => f.addEventListener('change', saveHead));
     return el('section', { class: 'card stack' },
+      el('datalist', { id: 'setlist-themes' }, s.settings.themes.map((t) => el('option', { value: t }))),
       el('div', { class: 'form-grid' }, field('Data', date), field('Horário', time), field('Tipo de culto', type), field('Título', title), field('Ministro responsável', minister)),
+      field('Tema / mensagem do culto', theme),
       field('Observações para a equipe', notes));
-  })() : (sl.notes ? el('div', { class: 'notice info' }, sl.notes) : null);
+  })() : ((sl.theme || sl.notes) ? el('div', { class: 'notice info stack', style: { gap: '4px' } },
+    sl.theme ? el('div', null, el('b', null, 'Tema: '), sl.theme) : null,
+    sl.notes ? el('div', { style: { whiteSpace: 'pre-wrap' } }, sl.notes) : null) : null);
 
-  const shareText = () => {
-    const lines = [`*${sl.title || sl.serviceType}* — ${fmtDate(sl.date)}${sl.time ? ' às ' + sl.time : ''}`, ''];
-    sl.items.forEach((it, i) => lines.push(`${i + 1}. ${store.findSong(it.songId)?.title || ''} (${it.key || '?'})${it.singerId ? ' — ' + store.userName(it.singerId) : ''}`));
-    if (sl.roster.length) { lines.push('', '*Escala*'); sl.roster.forEach((r) => lines.push(`${r.func}: ${store.userName(r.userId)}`)); }
-    if (sl.notes) lines.push('', sl.notes);
-    return lines.join('\n');
-  };
 
   return el('div', { class: 'stack', style: { gap: '18px' } },
     el('a', { href: '#/setlists', class: 'small row', style: { gap: '4px' } }, icon('back', 16), 'Setlists'),
     el('div', { class: 'page-head' },
       el('div', { class: 'grow' },
         el('h1', null, sl.title || sl.serviceType),
-        el('p', null, `${fmtDate(sl.date)}${sl.time ? ' · ' + sl.time : ''} · ${sl.items.length} músicas · ${fmtDuration(total)} estimado`)),
+        el('p', null, `${fmtDate(sl.date)}${sl.time ? ' · ' + sl.time : ''} · ${sl.items.length} músicas · ${fmtDuration(total)} estimado${sl.theme ? ' · tema: ' + sl.theme : ''}`)),
       pill(STATUS_LABEL[sl.status], STATUS_KIND[sl.status])),
     el('div', { class: 'row' },
       el('button', { class: 'btn primary', onclick: () => openWorshipMode(sl.id), disabled: !sl.items.length }, icon('screen'), 'Modo culto'),
-      el('a', { class: 'btn', href: 'https://wa.me/?text=' + encodeURIComponent(shareText()), target: '_blank', rel: 'noopener' }, icon('share'), 'WhatsApp'),
-      el('button', { class: 'btn', onclick: () => copyText(shareText()) }, icon('copy'), 'Copiar texto'),
+      el('button', { class: 'btn', onclick: () => exportDialog(sl) }, icon('share'), 'Enviar / exportar'),
       admin && sl.status === 'rascunho' ? el('button', { class: 'btn', onclick: () => { update((x) => { x.status = 'publicado'; }); toast('Setlist publicado para a equipe'); } }, 'Publicar') : null,
       admin && sl.status !== 'realizado' ? el('button', { class: 'btn', onclick: () => { store.markSetlistDone(sl.id, true); toast('Registrado no histórico'); }, title: 'Conta as músicas nos relatórios' }, icon('check'), 'Marcar como realizado') : null,
       admin && sl.status === 'realizado' ? el('button', { class: 'btn', onclick: () => store.markSetlistDone(sl.id, false) }, 'Desfazer realizado') : null,
@@ -183,6 +181,82 @@ export function renderSetlistDetail(id) {
     headFields,
     el('section', { class: 'stack' }, el('h2', null, 'Músicas'), itemsBox, addBox),
     rosterBox);
+}
+
+// ---------------- Exportar / enviar ----------------
+const EXPORT_OPTS = [
+  ['keys', 'Tons'],
+  ['singers', 'Quem canta'],
+  ['itemNotes', 'Observações de cada música'],
+  ['bpm', 'BPM'],
+  ['links', 'Links de referência (YouTube)'],
+  ['theme', 'Tema e observações do culto'],
+  ['roster', 'Escala da equipe'],
+];
+
+function loadExportPrefs() {
+  const d = { keys: true, singers: true, itemNotes: true, bpm: false, links: false, theme: true, roster: true, format: 'whatsapp' };
+  try { return { ...d, ...JSON.parse(localStorage.getItem('repertorio-louvor.export') || '{}') }; } catch { return d; }
+}
+
+/** Texto do setlist. format: "whatsapp" (com *negrito*) ou "texto" (simples). */
+export function setlistText(sl, o = loadExportPrefs()) {
+  const b = (t) => (o.format === 'whatsapp' ? `*${t}*` : t.toUpperCase());
+  const lines = [b(sl.title || sl.serviceType || 'Setlist'), `${fmtDate(sl.date)}${sl.time ? ' às ' + sl.time : ''}${sl.title && sl.serviceType ? ' · ' + sl.serviceType : ''}`];
+  if (o.theme && sl.theme) lines.push(`Tema: ${sl.theme}`);
+  lines.push('');
+  sl.items.forEach((it, i) => {
+    const song = store.findSong(it.songId);
+    const v = store.findVersion(it.songId, it.versionId);
+    const extra = [o.keys && it.key ? `Tom ${it.key}` : null, o.bpm && v?.bpm ? `${v.bpm} bpm` : null].filter(Boolean).join(' · ');
+    lines.push(`${i + 1}. ${song?.title || 'Música removida'}${song?.artist ? ' (' + song.artist + ')' : ''}${extra ? ' — ' + extra : ''}`);
+    if (o.singers && it.singerId) lines.push(`   Ministra: ${store.userName(it.singerId)}`);
+    if (o.itemNotes && it.note) lines.push(`   Obs.: ${it.note}`);
+    if (o.links && v?.youtube) lines.push(`   ${v.youtube}`);
+  });
+  if (o.roster && sl.roster.length) {
+    lines.push('', b('Escala'));
+    const byFunc = new Map();
+    for (const r of sl.roster) {
+      if (r.status === 'recusado') continue;
+      if (!byFunc.has(r.func)) byFunc.set(r.func, []);
+      byFunc.get(r.func).push(store.userName(r.userId));
+    }
+    for (const [f, names] of byFunc) lines.push(`${f}: ${names.join(', ')}`);
+  }
+  if (o.theme && sl.notes) lines.push('', b('Observações'), sl.notes);
+  return lines.join('\n');
+}
+
+function exportDialog(sl) {
+  const o = loadExportPrefs();
+  const ta = el('textarea', { class: 'mono', style: { minHeight: '260px' }, 'aria-label': 'Texto do setlist' });
+  const fill = () => { ta.value = setlistText(sl, o); try { localStorage.setItem('repertorio-louvor.export', JSON.stringify(o)); } catch { /* ok */ } };
+  const checks = el('div', { class: 'chips' }, EXPORT_OPTS.map(([k, label]) => {
+    const b = el('button', { type: 'button', class: 'chip' + (o[k] ? ' on' : ''), 'aria-pressed': String(!!o[k]), onclick: () => { o[k] = !o[k]; b.classList.toggle('on', o[k]); b.setAttribute('aria-pressed', String(o[k])); fill(); } }, label);
+    return b;
+  }));
+  const fmt = el('div', { class: 'side-toggle', role: 'group', 'aria-label': 'Formato' }, [['whatsapp', 'WhatsApp'], ['texto', 'Texto simples']].map(([k, l]) => {
+    const b = el('button', { type: 'button', class: o.format === k ? 'on' : '', onclick: () => { o.format = k; [...fmt.children].forEach((c) => c.classList.toggle('on', c === b)); fill(); } }, l);
+    return b;
+  }));
+  fill();
+  const name = `setlist-${sl.date}${sl.title ? '-' + sl.title.toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-') : ''}.txt`;
+  modal({
+    title: 'Enviar setlist',
+    wide: true,
+    body: [
+      el('div', { class: 'row' }, el('span', { class: 'small muted' }, 'Formato'), fmt),
+      el('div', { class: 'stack', style: { gap: '6px' } }, el('span', { class: 'small muted' }, 'Incluir'), checks),
+      ta,
+      el('p', { class: 'small muted' }, 'Você pode editar o texto antes de enviar.'),
+      el('div', { class: 'row' },
+        el('button', { class: 'btn primary', onclick: () => window.open('https://wa.me/?text=' + encodeURIComponent(ta.value), '_blank', 'noopener') }, icon('share', 16), 'Enviar pelo WhatsApp'),
+        navigator.share ? el('button', { class: 'btn', onclick: () => navigator.share({ title: sl.title || 'Setlist', text: ta.value }).catch(() => {}) }, 'Compartilhar…') : null,
+        el('button', { class: 'btn', onclick: () => copyText(ta.value) }, icon('copy', 16), 'Copiar'),
+        el('button', { class: 'btn', onclick: () => { downloadBlob(new Blob([ta.value], { type: 'text/plain;charset=utf-8' }), name); toast('Arquivo salvo'); } }, icon('download', 16), 'Baixar .txt')),
+    ],
+  });
 }
 
 function copyText(text) {

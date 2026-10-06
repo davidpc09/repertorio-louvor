@@ -190,7 +190,7 @@ function suggestDialog(song) {
       { label: 'Cancelar', kind: 'ghost' },
       { label: 'Enviar', kind: 'primary', onClick: () => {
         if (!ta.value.trim()) { toast('Escreva a sugestão antes de enviar.', 'bad'); return true; }
-        store.commit((s) => s.suggestions.push({ id: uid('sg'), songId: song.id, userId: store.currentUser().id, text: ta.value.trim(), status: 'pendente', createdAt: new Date().toISOString() }));
+        store.commit((s) => s.suggestions.push({ id: uid('sg'), ministryId: song.ministryId, songId: song.id, userId: store.currentUser().id, text: ta.value.trim(), status: 'pendente', createdAt: new Date().toISOString() }));
         toast('Sugestão enviada');
       } },
     ],

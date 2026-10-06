@@ -2,7 +2,26 @@
 
 App para o ministério de louvor: repertório de músicas, setlists, escala da equipe, relatórios e um player multipista com click. Funciona no iPhone, Android e computador, instalado pela tela inicial (PWA), e abre sem internet depois do primeiro acesso.
 
-Esta é a **versão 0.2 (modo demonstração)**: tudo funciona, mas os dados ficam guardados no próprio aparelho. A versão em nuvem (login real, dados compartilhados entre a equipe e Google Drive) é a próxima fase; o banco já está pronto em `supabase/schema.sql`.
+**Versão 0.3:** login de verdade e dados compartilhados entre a equipe pelo Supabase, com convites por link. A demonstração com dados de exemplo continua disponível na tela de login. A integração com o Google Drive (áudios compartilhados) é a próxima etapa.
+
+## Ligar a versão em nuvem (uma vez)
+
+1. **Banco de dados:** no Supabase, abra **SQL Editor → New query**, cole todo o arquivo `supabase/schema.sql` e clique em **Run**. Pode rodar de novo no futuro sem perder dados.
+2. **Confirmação de e-mail:** em **Authentication → Sign In / Providers → Email**, desligue **Confirm email** e salve. O e-mail padrão do Supabase só envia mensagens para a equipe do projeto (limite de 2 por hora), então os membros não receberiam a confirmação. Quem garante o acesso é o link de convite.
+3. **Endereços:** em **Authentication → URL Configuration**, deixe *Site URL* = `https://davidpc09.github.io/repertorio-louvor/` e adicione o mesmo endereço em *Redirect URLs*.
+4. **Chaves:** `js/config.js` já tem a URL do projeto e a *publishable key* (públicas por natureza). Nunca coloque a *secret key* nem a senha do banco no código.
+
+### Primeiro acesso
+- O líder abre o app, toca em **Criar conta** e depois em **Criar ministério**. Quem cria vira administrador.
+- Em **Equipe → Convidar pessoa**, escolhe nome, funções e papel e toca em **Gerar link**. O link vai pelo WhatsApp, vale 30 dias e serve para uma pessoa.
+- Quem abre o link cria a conta e já entra no ministério, como membro ou administrador.
+
+### Segurança
+- Cada pessoa só vê os ministérios dos quais participa. Membros leem; administradores e membros liberados editam músicas; só administradores mexem em setlists, escala, equipe e convites. As regras ficam no banco (Row Level Security), não no app.
+- O membro só consegue confirmar ou recusar a própria escala e enviar sugestões.
+- Um ministério nunca fica sem administrador.
+- Sem internet, o app abre com a última cópia e envia as alterações quando a conexão voltar.
+- "Esqueci a senha" depende de um servidor de e-mail próprio (SMTP) no Supabase. Até lá, só funciona para os e-mails da equipe do projeto Supabase.
 
 ## O que já funciona
 
@@ -11,7 +30,8 @@ Esta é a **versão 0.2 (modo demonstração)**: tudo funciona, mas os dados fic
 | Músicas | Cadastro com várias versões, tom original e do ministério, BPM, compasso, temas, cultos propícios, links (VS, instrumental, vozes, referência), tom por cantor |
 | Cifras | Acordes acima da letra ou entre colchetes `[G]`, transposição automática, modo letra |
 | Busca | Por título, artista, tema, tom; filtros por tema, culto e andamento; ordenar por "há mais tempo sem tocar" |
-| Setlists | Criar, copiar de um anterior, reordenar, tom do dia, quem canta, alertas de repetição e de salto de tom, publicar, marcar como realizado |
+| Setlists | Criar com tema e observações, copiar de um anterior, reordenar, tom do dia, quem canta, alertas de repetição e de salto de tom, publicar, marcar como realizado |
+| Enviar setlist | Texto pronto para WhatsApp (com negrito) ou texto simples; escolha o que entra (tons, quem canta, observações, BPM, links, tema, escala); editar antes de enviar, copiar ou baixar .txt |
 | Modo culto | Tela cheia com cifra/letra no tom do dia, fonte ajustável, deslizar para a próxima música |
 | Escala | Escalar por função, membro confirma ou recusa, datas indisponíveis, conflito entre ministérios |
 | Importação | Planilhas `.xlsx`, `.csv`, `.ods` (o `.xls` antigo precisa ser salvo como `.xlsx`), com modelo para baixar e tratamento de duplicadas; importa também histórico |
@@ -70,7 +90,10 @@ index.html              página única do app
 manifest.webmanifest    nome e ícone para instalar no celular
 sw.js                   guarda o app para funcionar offline
 css/app.css             visual (claro e escuro)
-js/main.js              navegação e layout
+js/main.js              navegação, layout e entrada (login)
+js/config.js            endereço do Supabase e chave pública
+js/cloud/client.js      login e acesso ao banco (API REST do Supabase)
+js/cloud/sync.js        sincronização, cópia offline e convites
 js/store.js             dados, permissões e exemplos
 js/music.js             tons, transposição, compassos
 js/importer.js          leitura de CSV, XLSX e ODS sem bibliotecas

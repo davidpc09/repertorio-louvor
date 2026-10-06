@@ -48,7 +48,7 @@ function append(node, children) {
 }
 
 export function clear(node) {
-  while (node.firstChild) node.removeChild(node.firstChild);
+  node.replaceChildren();
   return node;
 }
 

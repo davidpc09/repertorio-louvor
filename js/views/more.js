@@ -1,4 +1,7 @@
-import { el, field, textarea, toast, confirmBox, fmtDate, downloadBlob, today, splitList, select, initials } from '../dom.js';
+import { el, field, textarea, toast, confirmBox, fmtDate, downloadBlob, today, splitList, select, initials, modal, input } from '../dom.js';
+import * as api from '../cloud/client.js';
+import * as sync from '../cloud/sync.js';
+import { setMode } from './login.js';
 import { icon } from '../icons.js';
 import * as store from '../store.js';
 import { go } from '../nav.js';
@@ -12,6 +15,7 @@ export function renderMore() {
   const suggestions = s.suggestions.filter((x) => store.findSong(x.songId)?.ministryId === mid).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const mine = s.suggestions.filter((x) => x.userId === me.id);
 
+  const cloud = store.mode === 'cloud';
   const usage = el('span', { class: 'small muted' }, 'calculando…');
   storageEstimate().then((t) => { usage.textContent = t; });
 
@@ -46,7 +50,12 @@ export function renderMore() {
         el('a', { class: 'btn', href: '#/equipe' }, icon('users'), 'Equipe'),
         admin ? el('a', { class: 'btn', href: '#/importar' }, icon('upload'), 'Importar planilha') : null,
         el('a', { class: 'btn', href: '#/relatorios' }, icon('chart'), 'Relatórios'),
-        el('button', { class: 'btn', onclick: () => { store.logout(); go('/'); } }, icon('logout'), 'Trocar usuário'))),
+        cloud ? el('button', { class: 'btn', onclick: changePassword }, 'Trocar senha') : null,
+        cloud
+          ? el('button', { class: 'btn', onclick: async () => { if (await confirmBox('Sair', 'Sair desta conta neste aparelho?', 'Sair')) api.signOut(); } }, icon('logout'), 'Sair')
+          : el('button', { class: 'btn', onclick: () => { store.logout(); go('/'); } }, icon('logout'), 'Trocar usuário'))),
+
+    cloud ? syncCard() : null,
 
     admin ? el('section', { class: 'card stack' },
       el('h2', null, `Sugestões dos membros (${suggestions.filter((x) => x.status === 'pendente').length} pendentes)`),
@@ -83,7 +92,7 @@ export function renderMore() {
 
     el('section', { class: 'card stack' },
       el('h2', null, 'Google Drive'),
-      el('div', { class: 'notice info' }, 'Ainda não conectado. Na Fase 2 o administrador conecta a conta Google da igreja uma vez e o app cria uma pasta por música e versão (VS, Instrumental, Vozes, Cifras). Enquanto isso, cole os links do Drive na edição de cada versão.'),
+      el('div', { class: 'notice info' }, 'Ainda não conectado. Na próxima etapa o administrador conecta a conta Google da igreja uma vez e o app cria uma pasta por música e versão (VS, Instrumental, Vozes, Cifras). Enquanto isso, cole os links do Drive na edição de cada versão.'),
       el('p', { class: 'small muted' }, 'Os arquivos de multipista que você carrega no player ficam guardados neste aparelho para uso sem internet.')),
 
     el('section', { class: 'card stack' },
@@ -91,18 +100,19 @@ export function renderMore() {
       el('p', { class: 'small' }, 'Espaço usado pelo app: ', usage),
       el('div', { class: 'row' },
         el('button', { class: 'btn', onclick: () => { downloadBlob(new Blob([JSON.stringify(store.getState(), null, 2)], { type: 'application/json' }), `backup-repertorio-${today()}.json`); toast('Backup exportado'); } }, icon('download'), 'Exportar backup'),
-        el('label', { class: 'btn', for: 'backup-file' }, icon('upload'), 'Restaurar backup'), fileIn,
+        cloud ? null : el('label', { class: 'btn', for: 'backup-file' }, icon('upload'), 'Restaurar backup'), cloud ? null : fileIn,
         el('button', { class: 'btn', onclick: async () => {
           if (!(await confirmBox('Apagar faixas baixadas', 'Apagar todos os áudios de multipista guardados neste aparelho? Os cadastros continuam.', 'Apagar', true))) return;
           await clearAllTracks();
-          store.commit((st) => { for (const sg of st.songs) for (const v of sg.versions) for (const t of v.tracks) t.stored = false; });
+          if (!cloud) store.commit((st) => { for (const sg of st.songs) for (const v of sg.versions) for (const t of v.tracks) t.stored = false; });
           toast('Faixas apagadas');
         } }, icon('trash'), 'Apagar faixas'),
-        el('button', { class: 'btn danger', onclick: async () => {
+        cloud ? null : el('button', { class: 'btn danger', onclick: async () => {
           if (!(await confirmBox('Recomeçar demonstração', 'Apagar tudo neste aparelho e voltar aos dados de exemplo?', 'Recomeçar', true))) return;
           store.resetDemo();
           go('/');
-        } }, 'Recomeçar demonstração'))),
+        } }, 'Recomeçar demonstração'),
+        cloud ? null : (api.configured ? el('button', { class: 'btn', onclick: () => setMode('cloud') }, 'Sair da demonstração') : null))),
 
     el('section', { class: 'card stack' },
       el('h2', null, 'Instalar no celular'),
@@ -110,5 +120,47 @@ export function renderMore() {
       el('p', null, el('b', null, 'Android: '), 'abra no Chrome, toque no menu ⋮ e em “Instalar app” ou “Adicionar à tela inicial”.'),
       el('p', { class: 'small muted' }, 'Instalado, o app abre em tela cheia e funciona sem internet depois do primeiro acesso.')),
 
-    el('p', { class: 'small muted' }, 'Repertório Louvor · versão 0.2 (demonstração local)'));
+    el('p', { class: 'small muted' }, `Repertório Louvor · versão 0.3 · ${cloud ? 'dados na nuvem' : 'demonstração local'}`));
+}
+
+function syncCard() {
+  const s = store.getState();
+  const mid = s.session.ministryId;
+  const line = el('p', { class: 'small' });
+  const draw = (st) => {
+    const when = st.lastSync ? st.lastSync.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '—';
+    line.textContent = ({ ok: `Tudo sincronizado (última vez às ${when}).`, syncing: 'Sincronizando…', offline: `Sem internet. ${st.pending ? st.pending + ' alteração(ões) serão enviadas quando a conexão voltar.' : 'Você continua vendo a última cópia salva.'}`, error: 'Erro: ' + (st.error || ''), idle: '' })[st.state] || '';
+  };
+  const off = sync.onStatus(draw);
+  const card = el('section', { class: 'card stack' },
+    el('h2', null, 'Sincronização'),
+    line,
+    el('p', { class: 'small muted' }, 'Suas alterações vão para a nuvem automaticamente e as da equipe aparecem aqui em alguns segundos. Os áudios das multipistas ainda ficam só no aparelho em que foram carregados (o Google Drive vem na próxima etapa).'),
+    el('div', { class: 'row' },
+      el('button', { class: 'btn', onclick: () => sync.refreshNow() }, 'Sincronizar agora'),
+      el('button', { class: 'btn ghost', onclick: async () => {
+        if (!(await confirmBox('Sair do ministério', `Deixar de participar do ${store.currentMinistry()?.name}? Para voltar, você precisará de um novo convite.`, 'Sair do ministério', true))) return;
+        try { await sync.leaveMinistry(mid); toast('Você saiu do ministério'); go('/'); } catch (e) { toast(api.friendlyError(e), 'bad'); }
+      } }, 'Sair deste ministério')));
+  // para de ouvir quando o cartão sai da tela
+  const mo = new MutationObserver(() => { if (!card.isConnected) { off(); mo.disconnect(); } });
+  setTimeout(() => mo.observe(document.body, { childList: true, subtree: true }), 0);
+  return card;
+}
+
+function changePassword() {
+  const p1 = input({ type: 'password', autocomplete: 'new-password', placeholder: 'Mínimo de 6 caracteres' });
+  const p2 = input({ type: 'password', autocomplete: 'new-password', placeholder: 'Repita a senha' });
+  modal({
+    title: 'Trocar senha',
+    body: [field('Nova senha', p1), field('Confirme', p2)],
+    actions: [
+      { label: 'Cancelar', kind: 'ghost' },
+      { label: 'Salvar', kind: 'primary', onClick: async () => {
+        if (p1.value.length < 6) { toast('A senha precisa ter pelo menos 6 caracteres.', 'bad'); return true; }
+        if (p1.value !== p2.value) { toast('As duas senhas não são iguais.', 'bad'); return true; }
+        try { await api.updatePassword(p1.value); toast('Senha alterada'); } catch (e) { toast(api.friendlyError(e), 'bad'); return true; }
+      } },
+    ],
+  });
 }

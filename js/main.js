@@ -1,7 +1,9 @@
 import { el, clear, toast, initials } from './dom.js';
 import { icon } from './icons.js';
 import * as store from './store.js';
-import { renderLogin } from './views/login.js';
+import { renderLogin, renderCloudLogin, renderNewPassword, renderOnboarding, renderLoading, renderCloudError } from './views/login.js';
+import * as api from './cloud/client.js';
+import * as sync from './cloud/sync.js';
 import { renderHome } from './views/home.js';
 import { renderSongs, renderSongDetail, renderSongEdit } from './views/songs.js';
 import { renderSetlists, renderSetlistDetail, openWorshipMode } from './views/setlists.js';
@@ -83,6 +85,7 @@ function layout(content) {
         el('span', { class: 'mobile-brand' }, 'Repertório'),
         minSelect,
         el('span', { class: 'spacer' }),
+        store.mode === 'cloud' ? el('button', { class: 'sync-dot', id: 'sync-dot', onclick: () => sync.refreshNow(), title: 'Sincronização' }, el('i')) : el('span', { class: 'pill warn', title: 'Os dados ficam só neste aparelho' }, 'demonstração'),
         el('button', { class: 'user-chip', onclick: () => go('/mais'), title: 'Conta e configurações' },
           el('span', { class: 'avatar' }, initials(user.name)),
           el('span', { class: 'uname small' }, user.name),
@@ -93,8 +96,67 @@ function layout(content) {
       TABS.map(([p, label, ic]) => el('a', { href: '#' + p, class: isActive(p, current) ? 'active' : '' }, icon(ic), label))));
 }
 
+// ---------- Modo nuvem ----------
+const useCloud = api.configured && (() => { try { return localStorage.getItem('repertorio-louvor.mode') !== 'demo'; } catch { return true; } })();
+const cloud = { phase: 'boot', error: null, notice: null };
+
+async function startCloud() {
+  const user = api.currentAuthUser();
+  if (!user?.id) { cloud.phase = 'login'; render(); return; }
+  const keepPhase = cloud.phase === 'newPassword';
+  if (!keepPhase) cloud.phase = 'loading';
+  render();
+  try {
+    await sync.start(user.id, { onFirstData: () => { if (cloud.phase === 'loading') { cloud.phase = 'app'; render(); } } });
+    if (cloud.phase === 'loading') cloud.phase = 'app';
+    const joined = sync.takeJoined();
+    if (joined?.error) toast(joined.error, 'bad');
+    else if (joined) toast('Você entrou no ministério ' + (store.currentMinistry()?.name || ''));
+  } catch (e) {
+    cloud.phase = 'error';
+    cloud.error = e;
+  }
+  render();
+}
+
+function renderCloud() {
+  const p = path();
+  const conv = p.match(/^\/convite\/([A-Za-z0-9]+)$/);
+  if (conv) {
+    sync.rememberInvite(conv[1]);
+    history.replaceState(null, '', location.pathname + location.search + '#/');
+    if (cloud.phase === 'app' || cloud.phase === 'onboarding') {
+      sync.joinWithCode(conv[1]).then((r) => {
+        if (r?.error) toast(r.error, 'bad'); else toast('Você entrou no ministério ' + (store.currentMinistry()?.name || ''));
+        render();
+      });
+    }
+  }
+  if (!api.getSession()) { cloud.phase = 'login'; return renderCloudLogin({ notice: cloud.notice }); }
+  if (cloud.phase === 'newPassword') return renderNewPassword(() => { cloud.phase = store.getState()?.session?.userId ? 'app' : 'loading'; render(); if (cloud.phase === 'loading') startCloud(); });
+  if (cloud.phase === 'error') return renderCloudError(cloud.error, () => startCloud());
+  if (cloud.phase !== 'app') return renderLoading();
+  const s = store.getState();
+  if (!s.ministries.length || !store.currentUser()) return renderOnboarding();
+  return null;
+}
+
+let rendering = false;
+let renderAgain = false;
 function render() {
+  // evita redesenhar dentro de outro redesenho (ex.: campo que perde o foco ao sair da tela)
+  if (rendering) { renderAgain = true; return; }
+  rendering = true;
+  try { renderNow(); } finally { rendering = false; }
+  if (renderAgain) { renderAgain = false; setTimeout(render, 0); }
+}
+
+function renderNow() {
   if (cleanup) { try { cleanup(); } catch { /* ignora */ } cleanup = null; }
+  if (useCloud) {
+    const screen = renderCloud();
+    if (screen) { clear(app).appendChild(screen); return; }
+  }
   const user = store.currentUser();
   if (!user) {
     clear(app).appendChild(renderLogin());
@@ -118,12 +180,32 @@ function render() {
 }
 
 // ---------- Inicialização ----------
-store.load();
 setRenderer(render);
 // Qualquer alteração salva redesenha a página atual (o player salva em modo silencioso).
 store.subscribe(() => { const y = window.scrollY; render(); window.scrollTo(0, y); });
 window.addEventListener('hashchange', render);
-render();
+
+sync.onStatus((st) => {
+  const dot = document.getElementById('sync-dot');
+  if (!dot) return;
+  dot.dataset.state = st.state;
+  const when = st.lastSync ? ' · ' + st.lastSync.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '';
+  dot.title = ({ ok: 'Sincronizado' + when, syncing: 'Sincronizando…', offline: `Sem internet${st.pending ? ` · ${st.pending} alteração(ões) aguardando envio` : ''}`, error: 'Erro ao sincronizar: ' + (st.error || ''), idle: '' })[st.state] || '';
+  dot.setAttribute('aria-label', dot.title);
+});
+
+(async () => {
+  if (!useCloud) { store.load(); render(); return; }
+  store.loadCloud(null, null);
+  const redirect = await api.handleAuthRedirect().catch(() => null);
+  if (redirect?.error) cloud.notice = { text: redirect.error, kind: 'bad' };
+  if (redirect?.type === 'recovery') cloud.phase = 'newPassword';
+  api.onAuthChange((sess) => {
+    if (!sess) { sync.stop(); store.loadCloud(null, null); cloud.phase = 'login'; render(); }
+    else if (cloud.phase === 'login' || cloud.phase === 'boot') startCloud();
+  });
+  if (api.getSession()) startCloud(); else { cloud.phase = 'login'; render(); }
+})();
 
 // Tema salvo (opcional)
 try {

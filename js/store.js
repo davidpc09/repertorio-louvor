@@ -1,24 +1,34 @@
-// Estado do aplicativo. Neste modo ("demonstração local") os dados ficam no próprio aparelho
-// (localStorage). O arquivo supabase/schema.sql tem o mesmo modelo para a versão em nuvem.
+// Estado do aplicativo.
+// • Modo demonstração: os dados ficam só neste aparelho (localStorage), com exemplos.
+// • Modo nuvem: o mesmo estado é preenchido e sincronizado com o Supabase por js/cloud/sync.js.
 
 import { uid, today, toISODate } from './dom.js';
 
 const KEY = 'repertorio-louvor.v1';
 const listeners = new Set();
+const commitHooks = new Set();
 let state = null;
 let saveTimer = null;
+let persister = null;
 export let storageOk = true;
+export let mode = 'demo'; // 'demo' | 'cloud'
 
 export function getState() { return state; }
 
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
 /** Altera o estado: commit(s => { s.songs.push(...) }) */
-export function commit(mutator, { silent = false } = {}) {
+export function commit(mutator, opts = {}) {
   mutator(state);
   scheduleSave();
-  if (!silent) listeners.forEach((fn) => fn(state));
+  commitHooks.forEach((fn) => { try { fn(opts); } catch (e) { console.error(e); } });
+  if (!opts.silent) listeners.forEach((fn) => fn(state));
 }
+
+/** Avisa a tela para redesenhar (usado pela sincronização). */
+export function notify() { listeners.forEach((fn) => fn(state)); }
+export function onCommit(fn) { commitHooks.clear(); commitHooks.add(fn); }
+export function setPersister(fn) { persister = fn; }
 
 function scheduleSave() {
   clearTimeout(saveTimer);
@@ -26,6 +36,7 @@ function scheduleSave() {
 }
 
 export function saveNow() {
+  if (mode === 'cloud') { if (persister && state) persister(state); return; }
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
     storageOk = true;
@@ -55,6 +66,46 @@ export function replaceState(next) {
   state = migrate(next);
   saveNow();
   listeners.forEach((fn) => fn(state));
+}
+
+/** Modo nuvem: começa com a cópia guardada no aparelho (ou vazio) para a pessoa logada. */
+export function loadCloud(cached, userId) {
+  mode = 'cloud';
+  state = migrate(cached || { ministries: [], users: [], songs: [], setlists: [], executions: [], suggestions: [], invites: [] });
+  state.session.userId = userId;
+  state.invites ||= [];
+  const cur = state.ministries.find((m) => m.id === state.session.ministryId) || state.ministries[0];
+  if (cur) { state.session.ministryId = cur.id; cur.config = normalizeConfig(cur.config); state.settings = cur.config; }
+  return state;
+}
+
+export function setDemoMode() { mode = 'demo'; persister = null; commitHooks.clear(); }
+
+export function normalizeConfig(c) {
+  const d = defaultSettings();
+  const out = { ...d, ...(c || {}) };
+  for (const k of Object.keys(d)) if (!Array.isArray(out[k])) out[k] = d[k];
+  return out;
+}
+
+export function normalizeSong(song) {
+  song.versions ||= [];
+  song.themes ||= [];
+  song.services ||= [];
+  for (const v of song.versions) {
+    v.sections ||= [];
+    v.arrangement ||= [];
+    v.tracks ||= [];
+    v.singerKeys ||= [];
+    v.timeSig ||= '4/4';
+  }
+  return song;
+}
+
+export function normalizeSetlist(sl) {
+  sl.items ||= [];
+  sl.roster ||= [];
+  return sl;
 }
 
 function migrate(s) {
@@ -116,7 +167,13 @@ export function login(userId) {
   });
 }
 export function logout() { commit((s) => { s.session.userId = null; }); }
-export function switchMinistry(id) { commit((s) => { s.session.ministryId = id; }); }
+export function switchMinistry(id) {
+  commit((s) => {
+    s.session.ministryId = id;
+    const m = s.ministries.find((x) => x.id === id);
+    if (mode === 'cloud' && m) { m.config = normalizeConfig(m.config); s.settings = m.config; }
+  });
+}
 
 // ---------- Consultas ----------
 export function songsOfMinistry(mid = state.session.ministryId) {
