@@ -9,5 +9,9 @@ export const SUPABASE_KEY = 'sb_publishable_Q_ZppS_5ZcCBP8VP2H0IMQ_xA06kGke';
 // Se ficar vazio, usa o endereço em que o app foi aberto.
 export const APP_URL = '';
 
+// Google Client ID (público) — usado na integração com o Google Drive.
+// O Client Secret fica SOMENTE nos segredos da Edge Function, nunca no código.
+export const GOOGLE_CLIENT_ID = '454108544865-ag5615gks18hake2h587g80q1lpg6ks8.apps.googleusercontent.com';
+
 // Entrar com Google: fica desligado até configurarmos o Google Cloud (próxima fase).
 export const GOOGLE_LOGIN = false;

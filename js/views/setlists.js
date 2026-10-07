@@ -5,6 +5,7 @@ import { go } from '../nav.js';
 import { agendaItems } from '../calendar.js';
 import { calendarButtons } from './agenda.js';
 import { KEYS, semitonesBetween, renderSheet, transposeKey } from '../music.js';
+import * as tracksync from '../cloud/tracksync.js';
 
 const STATUS_LABEL = { rascunho: 'rascunho', publicado: 'publicado', realizado: 'realizado' };
 const STATUS_KIND = { rascunho: 'warn', publicado: 'ok', realizado: '' };
@@ -173,6 +174,7 @@ export function renderSetlistDetail(id) {
       el('button', { class: 'btn primary', onclick: () => openWorshipMode(sl.id), disabled: !sl.items.length }, icon('screen'), 'Modo culto'),
       el('button', { class: 'btn', onclick: () => exportDialog(sl) }, icon('share'), 'Enviar / exportar'),
       el('button', { class: 'btn', onclick: () => addToCalendar(sl) }, icon('calendar'), 'Minha agenda'),
+      store.canUsePlayer() && sl.items.length ? botaoBaixarFaixas(sl) : null,
       admin && sl.status === 'rascunho' ? el('button', { class: 'btn', onclick: () => { update((x) => { x.status = 'publicado'; }); toast('Setlist publicado para a equipe'); } }, 'Publicar') : null,
       admin && sl.status !== 'realizado' ? el('button', { class: 'btn', onclick: () => { store.markSetlistDone(sl.id, true); toast('Registrado no histórico'); }, title: 'Conta as músicas nos relatórios' }, icon('check'), 'Marcar como realizado') : null,
       admin && sl.status === 'realizado' ? el('button', { class: 'btn', onclick: () => store.markSetlistDone(sl.id, false) }, 'Desfazer realizado') : null,
@@ -229,6 +231,67 @@ export function setlistText(sl, o = loadExportPrefs()) {
   }
   if (o.theme && sl.notes) lines.push('', b('Observações'), sl.notes);
   return lines.join('\n');
+}
+
+/**
+ * "Baixar faixas" do culto inteiro: pega no Drive do ministério tudo o que ainda
+ * não está neste aparelho, para o player funcionar sem internet no dia.
+ */
+function botaoBaixarFaixas(sl) {
+  const btn = el('button', { class: 'btn' }, icon('download'), 'Baixar faixas');
+  let ocupado = false;
+
+  const contar = async () => {
+    let faltam = 0; let bytes = 0; let temDrive = false;
+    for (const it of sl.items) {
+      const song = store.findSong(it.songId);
+      const v = song?.versions.find((x) => x.id === it.versionId) || song?.versions[0];
+      if (!v) continue;
+      const sit = await tracksync.situacao(v);
+      faltam += sit.baixaveis.length;
+      bytes += sit.bytes;
+      if (sit.naNuvem) temDrive = true;
+    }
+    return { faltam, bytes, temDrive };
+  };
+
+  contar().then(({ faltam, bytes }) => {
+    if (ocupado) return;
+    clear(btn);
+    btn.append(icon('download'), faltam ? `Baixar faixas (${tracksync.mb(bytes)})` : 'Faixas no aparelho');
+    btn.classList.toggle('primary', faltam > 0);
+    btn.disabled = false;
+  });
+
+  btn.onclick = async () => {
+    if (ocupado) return;
+    const { faltam, temDrive } = await contar();
+    if (!faltam) {
+      toast(temDrive ? 'Todas as faixas deste culto já estão neste aparelho.' : 'Este culto ainda não tem multipistas no Drive.');
+      return;
+    }
+    let st = { conectado: false };
+    try { st = await tracksync.conectado(); } catch { /* offline */ }
+    if (!st.conectado) {
+      toast(store.isAdmin() ? 'Conecte o Google Drive do ministério em Mais › Google Drive.' : 'Peça a um administrador para conectar o Google Drive do ministério.', 'bad');
+      return;
+    }
+    ocupado = true;
+    const controle = new AbortController();
+    clear(btn);
+    btn.append('Baixando… 0%');
+    const r = await tracksync.baixarSetlist(sl, {
+      sinal: controle.signal,
+      aoProgredir: (p) => { clear(btn); btn.append(`Baixando ${p.musica} · ${Math.round(p.geral * 100)}%`); },
+    });
+    ocupado = false;
+    clear(btn);
+    btn.append(icon('download'), 'Baixar faixas');
+    if (r.baixadas) toast(`${r.baixadas} faixa(s) baixada(s) para este aparelho`);
+    for (const f of r.falhas.slice(0, 3)) toast(f, 'bad');
+    contar().then(({ faltam: f2, bytes }) => { clear(btn); btn.append(icon('download'), f2 ? `Baixar faixas (${tracksync.mb(bytes)})` : 'Faixas no aparelho'); btn.classList.toggle('primary', f2 > 0); });
+  };
+  return btn;
 }
 
 function exportDialog(sl) {

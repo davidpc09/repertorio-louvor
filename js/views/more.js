@@ -6,6 +6,8 @@ import { icon } from '../icons.js';
 import * as store from '../store.js';
 import { go } from '../nav.js';
 import { clearAllTracks, storageEstimate } from '../audio/trackstore.js';
+import * as drive from '../cloud/drive.js';
+import * as tracksync from '../cloud/tracksync.js';
 
 export function renderMore() {
   const s = store.getState();
@@ -90,10 +92,7 @@ export function renderMore() {
         listEditor('Funções da equipe', 'functions', 'Um por linha'),
         listEditor('Temas sugeridos', 'themes', 'Um por linha'))) : null,
 
-    el('section', { class: 'card stack' },
-      el('h2', null, 'Google Drive'),
-      el('div', { class: 'notice info' }, 'Ainda não conectado. Na próxima etapa o administrador conecta a conta Google da igreja uma vez e o app cria uma pasta por música e versão (VS, Instrumental, Vozes, Cifras). Enquanto isso, cole os links do Drive na edição de cada versão.'),
-      el('p', { class: 'small muted' }, 'Os arquivos de multipista que você carrega no player ficam guardados neste aparelho para uso sem internet.')),
+    driveCard(cloud, admin, mid),
 
     el('section', { class: 'card stack' },
       el('h2', null, 'Dados deste aparelho'),
@@ -120,7 +119,59 @@ export function renderMore() {
       el('p', null, el('b', null, 'Android: '), 'abra no Chrome, toque no menu ⋮ e em “Instalar app” ou “Adicionar à tela inicial”.'),
       el('p', { class: 'small muted' }, 'Instalado, o app abre em tela cheia e funciona sem internet depois do primeiro acesso.')),
 
-    el('p', { class: 'small muted' }, `Repertório Louvor · versão 0.4 · ${cloud ? 'dados na nuvem' : 'demonstração local'}`));
+    el('p', { class: 'small muted' }, `Repertório Louvor · versão 0.5 · ${cloud ? 'dados na nuvem' : 'demonstração local'}`));
+}
+
+/** Cartão "Google Drive": o administrador conecta a conta do ministério uma vez. */
+function driveCard(cloud, admin, mid) {
+  const corpo = el('div', { class: 'stack', style: { gap: '8px' } });
+  const card = el('section', { class: 'card stack' }, el('h2', null, 'Google Drive'), corpo);
+
+  if (!cloud) {
+    corpo.append(el('div', { class: 'notice info' }, 'Na demonstração os arquivos ficam só neste aparelho. Entre com a conta do ministério para usar o Drive.'));
+    return card;
+  }
+
+  async function pintar() {
+    corpo.replaceChildren(el('p', { class: 'small muted' }, 'Verificando…'));
+    let st;
+    try { st = await drive.status(mid); } catch { st = { conectado: false, erro: true }; }
+    const partes = [];
+    if (st.conectado) {
+      partes.push(el('div', { class: 'notice ok' }, 'Conectado' + (st.conta ? ' à conta ' + st.conta : '') + '. As multipistas enviadas pelo app vão para a pasta “Repertório Louvor”, com uma subpasta por música e versão.'));
+      partes.push(el('p', { class: 'small muted' }, 'Cada pessoa baixa as faixas para o aparelho dela no player ou no setlist, tocando em “Baixar faixas”. Os arquivos vão do Google direto para o aparelho.'));
+      if (admin) {
+        partes.push(el('div', { class: 'row' },
+          el('button', { class: 'btn ghost', onclick: async () => {
+            if (!(await confirmBox('Desconectar o Drive', 'O app deixa de enviar e baixar arquivos. As pastas e os arquivos continuam no Google Drive, e as faixas já baixadas continuam nos aparelhos. Desconectar?', 'Desconectar', true))) return;
+            try { await drive.desconectar(mid); tracksync.esquecerStatus(); toast('Google Drive desconectado'); pintar(); } catch (e) { toast(api.friendlyError(e), 'bad'); }
+          } }, 'Desconectar')));
+      }
+    } else if (!admin) {
+      partes.push(el('div', { class: 'notice info' }, 'O Google Drive do ministério ainda não foi conectado. Peça a um administrador para fazer isso aqui, nesta tela.'));
+    } else {
+      partes.push(el('div', { class: 'notice warn' }, 'Ainda não conectado. Conecte a conta Google do ministério uma vez: o app cria a pasta “Repertório Louvor” e guarda nela as multipistas, para a equipe baixar em qualquer aparelho.'));
+      const btn = el('button', { class: 'btn primary' }, icon('folder'), 'Conectar conta do ministério');
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try {
+          const url = await drive.iniciarConexao(mid);
+          tracksync.esquecerStatus();
+          location.href = url;   // volta para o app depois de autorizar
+        } catch (e) {
+          btn.disabled = false;
+          toast(e.status === 404 || /not found/i.test(e.message || '') ? 'A função “drive-auth” ainda não foi publicada no Supabase.' : api.friendlyError(e), 'bad');
+        }
+      };
+      partes.push(el('div', { class: 'row' }, btn));
+      partes.push(el('p', { class: 'small muted' }, 'Use a conta do ministério, não a sua pessoal. O app só vê as pastas e os arquivos que ele mesmo criar — nada mais do Drive dessa conta.'));
+    }
+    if (st.erro) partes.push(el('p', { class: 'small muted' }, 'Não consegui falar com o servidor agora; tente de novo quando a internet voltar.'));
+    corpo.replaceChildren(...partes);
+  }
+
+  pintar();
+  return card;
 }
 
 function syncCard() {
@@ -135,7 +186,7 @@ function syncCard() {
   const card = el('section', { class: 'card stack' },
     el('h2', null, 'Sincronização'),
     line,
-    el('p', { class: 'small muted' }, 'Suas alterações vão para a nuvem automaticamente e as da equipe aparecem aqui em alguns segundos. Os áudios das multipistas ainda ficam só no aparelho em que foram carregados (o Google Drive vem na próxima etapa).'),
+    el('p', { class: 'small muted' }, 'Suas alterações vão para a nuvem automaticamente e as da equipe aparecem aqui em alguns segundos. Os áudios das multipistas vão para o Google Drive do ministério e cada pessoa baixa para o seu aparelho com um toque.'),
     el('div', { class: 'row' },
       el('button', { class: 'btn', onclick: () => sync.refreshNow() }, 'Sincronizar agora'),
       el('button', { class: 'btn ghost', onclick: async () => {

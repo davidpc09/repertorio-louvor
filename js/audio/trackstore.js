@@ -59,6 +59,26 @@ export async function getTrack(versionId, trackId) {
   } catch { return null; }
 }
 
+/** O arquivo já está neste aparelho? (não carrega o conteúdo) */
+export async function hasTrack(versionId, trackId) {
+  const k = key(versionId, trackId);
+  if (memory.has(k)) return true;
+  const db = await openDb();
+  if (!db) return false;
+  try {
+    let req;
+    await tx(db, 'readonly', (st) => { req = st.getKey(k); return req; });
+    return req.result !== undefined;
+  } catch { return false; }
+}
+
+/** Quais faixas de uma versão já estão aqui. Devolve um Set de ids. */
+export async function presentTracks(versionId, trackIds) {
+  const out = new Set();
+  for (const id of trackIds) if (await hasTrack(versionId, id)) out.add(id);
+  return out;
+}
+
 export async function deleteTrack(versionId, trackId) {
   memory.delete(key(versionId, trackId));
   const db = await openDb();

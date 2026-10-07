@@ -5,6 +5,7 @@ import { go } from '../nav.js';
 import { PlayerEngine } from '../audio/engine.js';
 import { computePeaks, detectOnset } from '../audio/analysis.js';
 import { putTrack, getTrack, deleteTrack } from '../audio/trackstore.js';
+import * as tracksync from '../cloud/tracksync.js';
 import { beatsPerBar, barToSeconds } from '../music.js';
 import { CueController, QUANTIZE, FOLLOW, CUE_COLORS } from '../audio/cues.js';
 
@@ -293,6 +294,7 @@ export function renderPlayer(versionId) {
         canEdit ? el('div', { class: 'row' },
           el('button', { class: 'btn small', onclick: () => addCueAtPlayhead() }, icon('plus', 16), 'Marcar cue aqui'),
           el('button', { class: 'btn small ghost', onclick: () => { ui.tab = 'cues'; drawTabs(); drawTab(); } }, 'Editar cues e mapa')) : null),
+      v.tracks.length ? caixaDrive({ compacto: true }) : null,
       mixer(),
       v.tracks.length ? null : el('div', { class: 'notice info' }, 'Sem multipistas: o click toca sozinho no BPM da música, e os cues funcionam do mesmo jeito. Para adicionar as faixas, use a aba “Faixas e tempo 0”.'),
     ];
@@ -498,6 +500,92 @@ export function renderPlayer(versionId) {
       el('div', { class: 'mixer' }, strips));
   }
 
+  // ---------- Faixas no Drive do ministério ----------
+  let baixa = null;   // { controle, geral } enquanto baixa
+
+  /**
+   * Caixa "Baixar para este aparelho". Aparece na aba Tocar (compacta) e na aba
+   * Faixas (completa). Cada chamada cria um elemento novo e se preenche sozinha.
+   */
+  function caixaDrive({ compacto = false } = {}) {
+    const box = el('div', { class: 'stack', style: { gap: '8px' } });
+
+    async function pintar() {
+      let st = { conectado: false };
+      try { st = await tracksync.conectado(song.ministryId); } catch { /* offline */ }
+      const sit = await tracksync.situacao(v);
+      clear(box);
+      if (!v.tracks.length) return;
+
+      // nada a baixar e tudo aqui: só um aviso discreto na aba Faixas
+      if (!sit.baixaveis.length) {
+        if (compacto) return;
+        const linhas = [el('span', { class: 'small muted' }, `${sit.aqui} de ${sit.total} faixas neste aparelho`)];
+        if (st.conectado && sit.aqui) linhas.push(el('button', { class: 'btn small ghost', onclick: liberar }, icon('trash', 16), 'Apagar deste aparelho'));
+        if (!st.conectado && sit.soLocais.length) linhas.push(el('span', { class: 'small muted' }, '· ainda não enviadas ao Drive'));
+        box.appendChild(el('div', { class: 'row' }, linhas));
+        return;
+      }
+
+      if (!st.conectado) {
+        box.appendChild(el('div', { class: 'notice warn' },
+          `${sit.baixaveis.length === sit.total ? 'As faixas' : 'Algumas faixas'} desta música não estão neste aparelho. `,
+          store.isAdmin() ? 'Conecte o Google Drive do ministério em Mais › Google Drive para baixar em qualquer aparelho.'
+            : 'Peça a um administrador para conectar o Google Drive do ministério.'));
+        return;
+      }
+
+      const rotulo = el('span', null, `Baixar ${sit.baixaveis.length} faixa${sit.baixaveis.length > 1 ? 's' : ''}`,
+        sit.bytes ? el('small', { class: 'muted' }, ' · ' + tracksync.mb(sit.bytes)) : null);
+      const btn = el('button', { class: 'btn primary', onclick: () => baixar(pintar) }, icon('download', 18), rotulo);
+      const info = el('span', { class: 'small muted' }, sit.aqui ? `${sit.aqui} de ${sit.total} já estão aqui` : 'nenhuma faixa neste aparelho ainda');
+      box.appendChild(el('div', { class: 'row', style: { justifyContent: 'space-between' } }, btn, info));
+      if (!compacto) box.appendChild(el('p', { class: 'small muted' }, 'As faixas ficam guardadas no aparelho: depois disso o player toca sem internet.'));
+    }
+
+    async function baixar(depois) {
+      if (baixa) return;
+      const controle = new AbortController();
+      baixa = { controle };
+      const fill = el('div', { class: 'bar-fill', style: { width: '0%' } });
+      const label = el('span', { class: 'small' }, 'Começando…');
+      const cancelar = el('button', { class: 'btn small ghost', onclick: () => controle.abort() }, 'Cancelar');
+      clear(box);
+      box.append(el('div', { class: 'row', style: { justifyContent: 'space-between' } }, label, cancelar),
+        el('div', { class: 'bar-track' }, fill));
+      try {
+        const r = await tracksync.baixarVersao(song, v, {
+          sinal: controle.signal,
+          aoProgredir: (p) => {
+            fill.style.width = Math.round(p.geral * 100) + '%';
+            label.textContent = `Baixando ${p.faixa} (${p.indice} de ${p.total})`;
+          },
+        });
+        if (r.baixadas) toast(`${r.baixadas} faixa(s) baixada(s) para este aparelho`);
+        else if (!r.falhas.length) toast('Download cancelado', 'bad');
+        for (const f of r.falhas) toast(f, 'bad');
+      } catch (e) {
+        toast(e.message || 'Não consegui baixar as faixas', 'bad');
+      } finally {
+        baixa = null;
+      }
+      await loadStored();
+      await depois?.();
+    }
+
+    async function liberar() {
+      if (!(await confirmBox('Apagar deste aparelho', 'As faixas continuam no Drive do ministério e podem ser baixadas de novo. Apagar as cópias deste aparelho?', 'Apagar', true))) return;
+      await tracksync.liberarVersao(v);
+      engine.stop();
+      for (const t of v.tracks) engine.removeTrack(t.id);
+      toast('Espaço liberado neste aparelho');
+      drawTab();
+    }
+
+    pintar();
+    return box;
+  }
+
   // ---------- Aba Faixas e tempo 0 ----------
   function tabTracks() {
     const fileIn = el('input', { type: 'file', accept: 'audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac', multiple: true, hidden: true, id: 'track-files' });
@@ -516,6 +604,10 @@ export function renderPlayer(versionId) {
     const lanes = v.tracks.map((t, i) => lane(t, i));
     return [
       canEdit ? el('div', { class: 'stack', style: { gap: '8px' } }, drop, fileIn) : null,
+      v.tracks.length ? el('section', { class: 'card stack' },
+        el('div', { class: 'card-head' }, el('h2', null, 'Faixas neste aparelho'),
+          el('span', { class: 'small muted' }, 'Drive do ministério')),
+        caixaDrive()) : null,
       v.tracks.length ? el('section', { class: 'card stack' },
         el('div', { class: 'card-head' },
           el('h2', null, 'Tempo 0 de cada faixa'),
@@ -604,6 +696,7 @@ export function renderPlayer(versionId) {
             if (!(await confirmBox('Remover faixa', `Remover "${t.name}" desta versão?`, 'Remover', true))) return;
             engine.removeTrack(t.id);
             await deleteTrack(v.id, t.id);
+            if (t.driveFileId) { try { await tracksync.apagarDoDrive(t.driveFileId, song.ministryId); } catch { toast('A faixa saiu do app, mas continua no Drive.', 'bad'); } }
             saveVersion(v.id, (x) => { x.tracks = x.tracks.filter((y) => y.id !== t.id); });
             drawTabs(); drawTab();
           } }, icon('trash', 16))) : null));
@@ -627,6 +720,8 @@ export function renderPlayer(versionId) {
         engine.setTrack(trackMeta(meta), buf);
         n++;
         if (!stored) toast('Este navegador não guardou o arquivo; ele vale só enquanto a página estiver aberta.', 'bad');
+        // manda a cópia do ministério para o Drive, para os outros aparelhos baixarem
+        await enviarAoDrive(f, meta);
       } catch (e) {
         toast(`Não consegui ler ${f.name}. Use MP3, WAV ou M4A.`, 'bad');
       }
@@ -641,6 +736,23 @@ export function renderPlayer(versionId) {
     ui.viewStart = Math.max(0, Math.min(...v.tracks.map((t) => t.offsetSec || 0)) - 1);
     status.textContent = `${v.tracks.length} faixas prontas`;
     drawTabs(); drawTab();
+  }
+
+  /** Envia o arquivo para o Drive do ministério, se estiver conectado. */
+  async function enviarAoDrive(arquivo, meta) {
+    let st = { conectado: false };
+    try { st = await tracksync.conectado(song.ministryId); } catch { return; }
+    if (!st.conectado) return;
+    try {
+      status.textContent = `Enviando ${meta.name} para o Drive… 0%`;
+      const fileId = await tracksync.enviarFaixa(song, v, arquivo, arquivo.name, (f) => {
+        status.textContent = `Enviando ${meta.name} para o Drive… ${Math.round(f * 100)}%`;
+      });
+      meta.driveFileId = fileId;
+      saveVersion(v.id, (x) => { const y = x.tracks.find((z) => z.id === meta.id); if (y) y.driveFileId = fileId; });
+    } catch (e) {
+      toast(`${meta.name} ficou só neste aparelho: ${e.message}`, 'bad');
+    }
   }
 
   function detectAll() {

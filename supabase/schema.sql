@@ -1,5 +1,5 @@
 -- =====================================================================
--- Repertório Louvor — banco de dados (Supabase / PostgreSQL)  ·  versão 3
+-- Repertório Louvor — banco de dados (Supabase / PostgreSQL)  ·  versão 4
 -- Como usar: Supabase → SQL Editor → New query → cole este arquivo inteiro → Run.
 -- Pode rodar de novo sem perder dados: só cria o que ainda não existe e
 -- recria funções e permissões.
@@ -105,6 +105,25 @@ create table if not exists public.eventos (
 );
 create index if not exists eventos_min on public.eventos (ministerio_id, atualizado_em);
 
+-- Conexão com o Google Drive do ministério.
+-- A autorização (refresh token) fica aqui e NUNCA sai do servidor: nenhuma política
+-- de leitura é criada, então nem membros nem administradores conseguem lê-la pela API.
+-- Só a função drive-auth (que roda com a chave de serviço) enxerga esta tabela.
+create table if not exists public.drive_contas (
+  ministerio_id text primary key references public.ministerios(id) on delete cascade,
+  refresh_token text not null,
+  conta_email text,
+  pasta_raiz_id text,
+  conectado_por uuid references public.perfis(id),
+  conectado_em timestamptz not null default now(),
+  atualizado_em timestamptz not null default now()
+);
+
+-- O que os membros podem ver sobre a conexão (sem a autorização)
+create or replace view public.drive_status as
+  select ministerio_id, conta_email, pasta_raiz_id, conectado_em
+  from public.drive_contas;
+
 create table if not exists public.sugestoes (
   id text primary key,
   ministerio_id text not null references public.ministerios(id) on delete cascade,
@@ -180,12 +199,13 @@ alter table public.setlists enable row level security;
 alter table public.execucoes enable row level security;
 alter table public.sugestoes enable row level security;
 alter table public.eventos enable row level security;
+alter table public.drive_contas enable row level security;
 
 do $$
 declare r record;
 begin
   for r in select policyname, tablename from pg_policies where schemaname = 'public'
-    and tablename in ('perfis','ministerios','membros','convites','musicas','setlists','execucoes','sugestoes','eventos') loop
+    and tablename in ('perfis','ministerios','membros','convites','musicas','setlists','execucoes','sugestoes','eventos','drive_contas') loop
     execute format('drop policy %I on public.%I', r.policyname, r.tablename);
   end loop;
 end $$;
@@ -363,11 +383,21 @@ drop trigger if exists tg_ultimo_admin on public.membros;
 create constraint trigger tg_ultimo_admin after update or delete on public.membros
   deferrable initially deferred for each row execute function public.proteger_ultimo_admin();
 
+-- A view respeita as permissões de quem consulta (security_invoker) e mostra
+-- apenas o e-mail da conta conectada, nunca a autorização.
+alter view public.drive_status set (security_invoker = on);
+create policy drive_status_ler on public.drive_contas for select to authenticated
+  using (public.e_membro(ministerio_id));
+
 -- ---------- Acesso pela API ----------
 revoke all on all tables in schema public from anon;
 grant usage on schema public to authenticated;
 grant select, insert, update, delete on public.perfis, public.ministerios, public.membros, public.convites,
   public.musicas, public.setlists, public.execucoes, public.sugestoes, public.eventos to authenticated;
+-- a tabela da conexão fica fora do alcance da API; só a view de status é liberada
+revoke all on public.drive_contas from authenticated, anon;
+grant select (ministerio_id, conta_email, pasta_raiz_id, conectado_em) on public.drive_contas to authenticated;
+grant select on public.drive_status to authenticated;
 revoke execute on all functions in schema public from public, anon;
 grant execute on function public.garantir_perfil(text), public.criar_ministerio(text, jsonb), public.ver_convite(text),
   public.aceitar_convite(text), public.responder_escala(text, text, text), public.sair_do_ministerio(text),

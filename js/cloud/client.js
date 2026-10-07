@@ -232,3 +232,12 @@ export async function rpc(fn, args = {}, { auth = true } = {}) {
 }
 
 export const eq = (v) => 'eq.' + enc(v);
+
+/**
+ * Chama uma Edge Function (pasta supabase/functions). Vai com a chave pública do
+ * projeto e com o token do usuário, para a função saber quem está pedindo.
+ */
+export async function callFunction(nome, body = {}, { auth = true, method = 'POST' } = {}) {
+  const { data } = await request(`/functions/v1/${nome}`, { method, body, auth });
+  return data;
+}
