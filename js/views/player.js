@@ -6,7 +6,7 @@ import { PlayerEngine } from '../audio/engine.js';
 import { computePeaks, detectOnset } from '../audio/analysis.js';
 import { putTrack, getTrack, deleteTrack } from '../audio/trackstore.js';
 import * as tracksync from '../cloud/tracksync.js';
-import { beatsPerBar, barToSeconds } from '../music.js';
+import { beatsPerBar, barToSeconds, secondsToBar } from '../music.js';
 import { CueController, QUANTIZE, FOLLOW, CUE_COLORS } from '../audio/cues.js';
 
 const engine = new PlayerEngine();
@@ -367,6 +367,58 @@ export function renderPlayer(versionId) {
     drawTab();
   }
 
+  /** Importa cues de um CSV do timestamps.me (formato Ableton locators). */
+  function importCuesFromCSV(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const lines = reader.result.split(/\r?\n/).filter((l) => l.trim());
+      const bpm = v.bpm || 120;
+      const ts = v.timeSig || '4/4';
+      const parsed = [];
+      for (const line of lines) {
+        // Formato: (vazio),NOME,H:MM:SS.mmm  ou  NOME,H:MM:SS.mmm
+        const parts = line.split(',');
+        let name, timeStr;
+        if (parts.length >= 3) { name = parts[parts.length - 2].trim(); timeStr = parts[parts.length - 1].trim(); }
+        else if (parts.length === 2) { name = parts[0].trim(); timeStr = parts[1].trim(); }
+        else continue;
+        if (!name || !timeStr) continue;
+        const tm = timeStr.match(/^(\d+):(\d+):(\d+(?:[.,]\d+)?)$/);
+        if (!tm) continue;
+        const secs = Number(tm[1]) * 3600 + Number(tm[2]) * 60 + Number(tm[3].replace(',', '.'));
+        const bar = secondsToBar(secs, bpm, ts);
+        if (bar < 1) continue;
+        parsed.push({ name, bar });
+      }
+      if (!parsed.length) { toast('Nenhum cue encontrado no arquivo. Use o formato CSV do timestamps.me (Ableton locators).', 'bad'); return; }
+      // Elimina duplicatas de compasso
+      const seen = new Set();
+      const unique = parsed.filter((p) => { if (seen.has(p.bar)) return false; seen.add(p.bar); return true; });
+      unique.sort((a, b) => a.bar - b.bar);
+
+      const existentes = v.sections.length;
+      const acao = existentes ? 'substituir' : 'importar';
+      if (existentes && !confirm(`Já existem ${existentes} cues. Substituir pelos ${unique.length} do arquivo?`)) return;
+
+      saveVersion(v.id, (x) => {
+        if (existentes) { x.sections = []; x.arrangement = []; }
+        for (let i = 0; i < unique.length; i++) {
+          const endBar = unique[i + 1] ? unique[i + 1].bar - 1 : unique[i].bar + 7;
+          x.sections.push({
+            id: uid('p'), name: unique[i].name,
+            startBar: unique[i].bar, endBar,
+            color: CUE_COLORS[i % CUE_COLORS.length], follow: 'next',
+          });
+        }
+        x.sections.sort((a, b) => a.startBar - b.startBar);
+      });
+      toast(`${unique.length} cues importados do arquivo`);
+      cues.refreshAuto();
+      drawTab();
+    };
+    reader.readAsText(file);
+  }
+
   // ---------- Aba Cues e mapa ----------
   function tabCues() {
     const list = sortedCues();
@@ -438,8 +490,9 @@ export function renderPlayer(versionId) {
       el('datalist', { id: 'cue-names' }, names.map((n) => el('option', { value: n }))),
       el('section', { class: 'card stack' },
         el('div', { class: 'card-head' }, el('h2', null, `Cues (${list.length})`),
-          canEdit ? el('div', { class: 'row' },
+          canEdit ? el('div', { class: 'row', style: { flexWrap: 'wrap' } },
             el('button', { class: 'btn small', onclick: () => addCueAtPlayhead() }, icon('plus', 16), 'Cue no compasso atual'),
+            (() => { const inp = el('input', { type: 'file', accept: '.csv,.txt', hidden: true, onchange: () => { if (inp.files[0]) importCuesFromCSV(inp.files[0]); inp.value = ''; } }); return el('button', { class: 'btn small', onclick: () => inp.click() }, icon('upload', 16), 'Importar CSV (Ableton)'); })(),
             el('button', { class: 'btn small', onclick: () => {
               const last = list[list.length - 1];
               const startBar = last ? last.endBar + 1 : 1;
