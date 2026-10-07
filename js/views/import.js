@@ -5,7 +5,8 @@ import { readSpreadsheet, autoMap, SONG_FIELDS, HISTORY_FIELDS, parseDate, build
 import { normalizeKey } from '../music.js';
 
 export function renderImport() {
-  if (!store.isAdmin()) return emptyState('Somente administradores', 'A importação de planilhas é feita pelo administrador do ministério.', null);
+  if (!store.canAddSongs()) return emptyState('Sem permissão', 'Peça ao administrador a permissão de adicionar músicas.', null);
+  const canHistory = store.isAdmin();
 
   const state = { book: null, sheetIdx: 0, kind: 'songs', headerRow: 0, map: {}, dupMode: 'skip', createMissing: true };
   const stepBox = el('div', { class: 'stack', style: { gap: '16px' } });
@@ -40,7 +41,7 @@ export function renderImport() {
   function guessKind() {
     const h = header().map(normalize);
     const hasDate = h.some((c) => ['data', 'dia', 'date'].includes(c));
-    state.kind = hasDate && h.length <= 6 ? 'history' : 'songs';
+    state.kind = canHistory && hasDate && h.length <= 6 ? 'history' : 'songs';
     state.map = autoMap(header(), fields());
   }
 
@@ -65,7 +66,7 @@ export function renderImport() {
         el('div', { class: 'card-head' }, el('h2', null, '2. Confira as colunas'), el('span', { class: 'small muted' }, `${state.fileName} · ${sheet().rows.length - 1 - state.headerRow} linhas`)),
         el('div', { class: 'form-grid' },
           book.sheets.length > 1 ? el('div', { class: 'field' }, el('label', null, 'Aba'), select(book.sheets.map((s, i) => [String(i), s.name]), String(state.sheetIdx), { onchange: (e) => { state.sheetIdx = Number(e.target.value); state.headerRow = 0; guessKind(); drawMapping(); } })) : null,
-          el('div', { class: 'field' }, el('label', null, 'O que esta aba contém'), select([['songs', 'Cadastro de músicas'], ['history', 'Histórico (músicas tocadas por data)']], state.kind, { onchange: (e) => { state.kind = e.target.value; state.map = autoMap(header(), fields()); drawMapping(); } })),
+          el('div', { class: 'field' }, el('label', null, 'O que esta aba contém'), select(canHistory ? [['songs', 'Cadastro de músicas'], ['history', 'Histórico (músicas tocadas por data)']] : [['songs', 'Cadastro de músicas']], state.kind, { onchange: (e) => { state.kind = e.target.value; state.map = autoMap(header(), fields()); drawMapping(); } })),
           el('div', { class: 'field' }, el('label', null, 'Linha do cabeçalho'), select(sheet().rows.slice(0, 10).map((r, i) => [String(i), `Linha ${i + 1}: ${r.filter(Boolean).slice(0, 3).join(', ')}`]), String(state.headerRow), { onchange: (e) => { state.headerRow = Number(e.target.value); state.map = autoMap(header(), fields()); drawMapping(); } }))),
         el('div', { class: 'form-grid' },
           fields().map((f) => el('div', { class: 'field' },
@@ -103,7 +104,7 @@ export function renderImport() {
         el('h2', null, '3. Importar'),
         el('div', { class: 'row' }, pill(`${novas} novas`, 'ok'), pill(`${dup} já existem`, dup ? 'warn' : ''), invalid ? pill(`${invalid} sem título (ignoradas)`, 'bad') : null),
         dup ? el('div', { class: 'field' }, el('label', null, 'Músicas que já existem'),
-          select([['skip', 'Ignorar'], ['fill', 'Completar só os campos vazios'], ['version', `Criar nova versão quando a coluna Versão for diferente (${newVersions})`]], state.dupMode, { onchange: (e) => { state.dupMode = e.target.value; } })) : null,
+          select(store.canEditSongs() ? [['skip', 'Ignorar'], ['fill', 'Completar só os campos vazios'], ['version', `Criar nova versão quando a coluna Versão for diferente (${newVersions})`]] : [['skip', 'Ignorar (você não tem permissão para editar músicas)']], state.dupMode, { onchange: (e) => { state.dupMode = e.target.value; } })) : null,
         el('div', null, el('button', { class: 'btn primary', onclick: applySongs }, icon('check'), `Importar ${novas} músicas`)));
     }
     // histórico

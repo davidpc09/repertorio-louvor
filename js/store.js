@@ -116,6 +116,8 @@ function migrate(s) {
   s.setlists ||= [];
   s.executions ||= [];
   s.suggestions ||= [];
+  s.events ||= [];
+  for (const u of s.users) for (const m of u.memberships || []) normalizeMembership(m);
   s.session ||= { userId: null, ministryId: null };
   s.settings ||= defaultSettings();
   for (const song of s.songs) {
@@ -152,9 +154,36 @@ export function membership(user = currentUser(), ministryId = state.session.mini
   return user?.memberships?.find((m) => m.ministryId === ministryId) || null;
 }
 export function isAdmin() { return membership()?.role === 'admin'; }
-export function canEditSongs() {
-  const m = membership();
-  return !!m && (m.role === 'admin' || m.canEdit);
+
+/** Permissões que o administrador concede a cada pessoa (administrador tem todas). */
+export const PERMISSIONS = [
+  ['player', 'Usar o player multipista'],
+  ['musicas_adicionar', 'Adicionar músicas (e importar planilhas)'],
+  ['musicas_editar', 'Editar músicas, cifras, cues e faixas'],
+  ['musicas_remover', 'Remover músicas'],
+  ['escala', 'Montar a escala da equipe'],
+  ['eventos', 'Criar e editar eventos da agenda'],
+];
+export const DEFAULT_PERMISSIONS = ['player'];
+
+export function can(perm, ministryId = state.session.ministryId, user = currentUser()) {
+  const m = membership(user, ministryId);
+  return !!m && (m.role === 'admin' || (m.permissions || []).includes(perm));
+}
+export const canEditSongs = () => can('musicas_editar');
+export const canAddSongs = () => can('musicas_adicionar');
+export const canRemoveSongs = () => can('musicas_remover');
+export const canUsePlayer = () => can('player');
+export const canRoster = () => can('escala');
+export const canEvents = () => can('eventos');
+
+/** Converte o formato antigo (canEdit) para a lista de permissões. */
+export function normalizeMembership(m) {
+  if (!Array.isArray(m.permissions)) {
+    m.permissions = [...DEFAULT_PERMISSIONS, ...(m.canEdit ? ['musicas_adicionar', 'musicas_editar'] : [])];
+  }
+  delete m.canEdit;
+  return m;
 }
 
 export function login(userId) {
@@ -312,11 +341,11 @@ function seed() {
   U('u-lider', 'David (líder)', 'lider@exemplo.com', ['Ministro', 'Violão'], [
     { ministryId: 'min-domingo', role: 'admin' }, { ministryId: 'min-jovens', role: 'admin' }]);
   U('u-ana', 'Ana', 'ana@exemplo.com', ['Ministro', 'Backing vocal'], [
-    { ministryId: 'min-domingo', role: 'membro' }, { ministryId: 'min-jovens', role: 'membro' }], { preferredKey: 'A' });
-  U('u-pedro', 'Pedro', 'pedro@exemplo.com', ['Violão', 'Guitarra'], [{ ministryId: 'min-domingo', role: 'membro', canEdit: true }]);
+    { ministryId: 'min-domingo', role: 'membro', permissions: ['player', 'eventos'] }, { ministryId: 'min-jovens', role: 'membro' }], { preferredKey: 'A' });
+  U('u-pedro', 'Pedro', 'pedro@exemplo.com', ['Violão', 'Guitarra'], [{ ministryId: 'min-domingo', role: 'membro', permissions: ['player', 'musicas_adicionar', 'musicas_editar', 'escala'] }]);
   U('u-julia', 'Júlia', 'julia@exemplo.com', ['Teclado', 'Backing vocal'], [{ ministryId: 'min-domingo', role: 'membro' }]);
   U('u-lucas', 'Lucas', 'lucas@exemplo.com', ['Bateria'], [{ ministryId: 'min-domingo', role: 'membro' }, { ministryId: 'min-jovens', role: 'membro' }]);
-  U('u-marcos', 'Marcos', 'marcos@exemplo.com', ['Baixo'], [{ ministryId: 'min-domingo', role: 'membro' }]);
+  U('u-marcos', 'Marcos', 'marcos@exemplo.com', ['Baixo'], [{ ministryId: 'min-domingo', role: 'membro', permissions: [] }]);
   U('u-bia', 'Bia', 'bia@exemplo.com', ['Ministro'], [{ ministryId: 'min-jovens', role: 'membro' }]);
 
   // Músicas de exemplo (somente metadados; tons e BPM ilustrativos, confira antes de usar)
@@ -423,7 +452,14 @@ function seed() {
     ],
   });
   s.users.find((u) => u.id === 'u-lucas').unavailable.push(toISODate(next));
-  s.suggestions.push({ id: uid('sg'), songId: 's2', userId: 'u-ana', text: 'Podemos baixar para C? Fica melhor para minha voz.', status: 'pendente', createdAt: now });
+  // Agenda de exemplo
+  const sab = new Date(next); sab.setDate(next.getDate() - 1);
+  const qua = new Date(next); qua.setDate(next.getDate() + 3);
+  s.events = [
+    { id: 'ev-ensaio', ministryId: 'min-domingo', title: 'Ensaio geral', type: 'Ensaio', date: toISODate(sab), start: '16:00', end: '18:00', location: 'Templo principal', notes: 'Passar o setlist de domingo com multipistas.' },
+    { id: 'ev-reuniao', ministryId: 'min-domingo', title: 'Reunião do ministério', type: 'Reunião', date: toISODate(qua), start: '20:00', end: '21:00', location: 'Sala 2', notes: 'Planejamento do mês.' },
+  ];
+  s.suggestions.push({ id: uid('sg'), ministryId: 'min-domingo', songId: 's2', userId: 'u-ana', text: 'Podemos baixar para C? Fica melhor para minha voz.', status: 'pendente', createdAt: now });
   void today;
   return s;
 }

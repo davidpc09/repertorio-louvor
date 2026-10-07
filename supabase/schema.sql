@@ -1,14 +1,15 @@
 -- =====================================================================
--- Repertório Louvor — banco de dados (Supabase / PostgreSQL)  ·  versão 2
+-- Repertório Louvor — banco de dados (Supabase / PostgreSQL)  ·  versão 3
 -- Como usar: Supabase → SQL Editor → New query → cole este arquivo inteiro → Run.
 -- Pode rodar de novo sem perder dados: só cria o que ainda não existe e
 -- recria funções e permissões.
 --
 -- Segurança (Row Level Security):
 --   • cada pessoa só enxerga os ministérios dos quais faz parte;
---   • membros leem; administradores (e membros liberados) editam músicas;
---   • só administradores mexem em setlists, escala, equipe e convites;
---   • membro só consegue responder a própria escala e enviar sugestões.
+--   • administradores podem tudo; cada membro recebe permissões específicas:
+--     player, musicas_adicionar, musicas_editar, musicas_remover, escala, eventos;
+--   • setlists, equipe e convites: só administradores (escala: quem tem permissão);
+--   • membro sempre pode responder a própria escala e enviar sugestões.
 -- Convites: o administrador gera um link secreto (enviado por WhatsApp);
 -- quem abre o link e cria a conta entra no ministério com o papel definido.
 -- =====================================================================
@@ -46,6 +47,10 @@ create table if not exists public.membros (
   primary key (ministerio_id, usuario_id)
 );
 create index if not exists membros_usuario on public.membros (usuario_id);
+alter table public.membros add column if not exists permissoes text[] not null default '{player}';
+-- quem tinha "pode editar" (versão 2) ganha as permissões equivalentes
+update public.membros set permissoes = array(select distinct unnest(permissoes || array['musicas_adicionar','musicas_editar']))
+  where pode_editar and not ('musicas_editar' = any(permissoes));
 
 create table if not exists public.convites (
   id text primary key check (length(id) >= 20),   -- código secreto do link
@@ -58,6 +63,7 @@ create table if not exists public.convites (
   criado_em timestamptz not null default now(),
   expira_em timestamptz not null default now() + interval '30 days'
 );
+alter table public.convites add column if not exists permissoes text[] not null default '{player}';
 
 create table if not exists public.musicas (
   id text primary key,
@@ -89,6 +95,16 @@ create table if not exists public.execucoes (
 );
 create index if not exists execucoes_min on public.execucoes (ministerio_id, atualizado_em);
 
+create table if not exists public.eventos (
+  id text primary key,
+  ministerio_id text not null references public.ministerios(id) on delete cascade,
+  data date,
+  dados jsonb not null,                           -- título, tipo, horário, local, observações
+  atualizado_em timestamptz not null default now(),
+  atualizado_por uuid default auth.uid()
+);
+create index if not exists eventos_min on public.eventos (ministerio_id, atualizado_em);
+
 create table if not exists public.sugestoes (
   id text primary key,
   ministerio_id text not null references public.ministerios(id) on delete cascade,
@@ -111,7 +127,7 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['perfis','ministerios','membros','musicas','setlists','execucoes','sugestoes'] loop
+  foreach t in array array['perfis','ministerios','membros','musicas','setlists','execucoes','sugestoes','eventos'] loop
     execute format('drop trigger if exists tg_atualizado on public.%I', t);
     execute format('create trigger tg_atualizado before insert or update on public.%I for each row execute function public.tocar_atualizado()', t);
   end loop;
@@ -131,6 +147,12 @@ $$;
 create or replace function public.pode_editar_musicas(min text) returns boolean
 language sql stable security definer set search_path = public as $$
   select exists (select 1 from membros where ministerio_id = min and usuario_id = auth.uid() and ativo and (papel = 'admin' or pode_editar));
+$$;
+
+create or replace function public.tem_permissao(min text, perm text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from membros where ministerio_id = min and usuario_id = auth.uid() and ativo
+                 and (papel = 'admin' or perm = any(permissoes)));
 $$;
 
 -- Pessoas que dividem algum ministério comigo
@@ -157,12 +179,13 @@ alter table public.musicas enable row level security;
 alter table public.setlists enable row level security;
 alter table public.execucoes enable row level security;
 alter table public.sugestoes enable row level security;
+alter table public.eventos enable row level security;
 
 do $$
 declare r record;
 begin
   for r in select policyname, tablename from pg_policies where schemaname = 'public'
-    and tablename in ('perfis','ministerios','membros','convites','musicas','setlists','execucoes','sugestoes') loop
+    and tablename in ('perfis','ministerios','membros','convites','musicas','setlists','execucoes','sugestoes','eventos') loop
     execute format('drop policy %I on public.%I', r.policyname, r.tablename);
   end loop;
 end $$;
@@ -188,8 +211,17 @@ create policy convites_admin on public.convites for all to authenticated
 
 create policy musicas_ler on public.musicas for select to authenticated
   using (public.e_membro(ministerio_id));
-create policy musicas_editar on public.musicas for all to authenticated
-  using (public.pode_editar_musicas(ministerio_id)) with check (public.pode_editar_musicas(ministerio_id));
+create policy musicas_adicionar on public.musicas for insert to authenticated
+  with check (public.tem_permissao(ministerio_id, 'musicas_adicionar'));
+create policy musicas_editar on public.musicas for update to authenticated
+  using (public.tem_permissao(ministerio_id, 'musicas_editar')) with check (public.tem_permissao(ministerio_id, 'musicas_editar'));
+create policy musicas_remover on public.musicas for delete to authenticated
+  using (public.tem_permissao(ministerio_id, 'musicas_remover'));
+
+create policy eventos_ler on public.eventos for select to authenticated
+  using (public.e_membro(ministerio_id));
+create policy eventos_editar on public.eventos for all to authenticated
+  using (public.tem_permissao(ministerio_id, 'eventos')) with check (public.tem_permissao(ministerio_id, 'eventos'));
 
 create policy setlists_ler on public.setlists for select to authenticated
   using (public.e_membro(ministerio_id) and (coalesce(dados->>'status', '') <> 'rascunho' or public.e_admin(ministerio_id)));
@@ -263,11 +295,12 @@ begin
   update perfis set
     funcoes = (select coalesce(array_agg(distinct f), '{}') from unnest(funcoes || c.funcoes) f)
   where id = auth.uid();
-  insert into membros (ministerio_id, usuario_id, papel, pode_editar)
-  values (c.ministerio_id, auth.uid(), c.papel, c.pode_editar)
+  insert into membros (ministerio_id, usuario_id, papel, pode_editar, permissoes)
+  values (c.ministerio_id, auth.uid(), c.papel, c.pode_editar or 'musicas_editar' = any(c.permissoes), c.permissoes)
   on conflict (ministerio_id, usuario_id) do update set ativo = true,
     papel = case when membros.papel = 'admin' then 'admin' else excluded.papel end,
-    pode_editar = membros.pode_editar or excluded.pode_editar;
+    pode_editar = membros.pode_editar or excluded.pode_editar,
+    permissoes = array(select distinct unnest(membros.permissoes || excluded.permissoes));
   delete from convites where id = c.id;
   return c.ministerio_id;
 end $$;
@@ -289,6 +322,18 @@ begin
   if v_idx is null then raise exception 'você não está nesta escala'; end if;
   update setlists set dados = jsonb_set(v_dados, array['roster', v_idx::text, 'status'], to_jsonb(p_status))
   where id = p_setlist;
+end $$;
+
+-- Quem tem a permissão "escala" monta a escala de um setlist (sem mexer nas músicas)
+create or replace function public.salvar_escala(p_setlist text, p_roster jsonb) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_min text;
+begin
+  if jsonb_typeof(p_roster) <> 'array' then raise exception 'escala inválida'; end if;
+  select ministerio_id into v_min from setlists where id = p_setlist for update;
+  if not found or not tem_permissao(v_min, 'escala') then raise exception 'sem permissão para montar a escala'; end if;
+  update setlists set dados = jsonb_set(dados, '{roster}', p_roster) where id = p_setlist;
 end $$;
 
 -- Sair de um ministério (o último administrador não pode sair)
@@ -322,10 +367,11 @@ create constraint trigger tg_ultimo_admin after update or delete on public.membr
 revoke all on all tables in schema public from anon;
 grant usage on schema public to authenticated;
 grant select, insert, update, delete on public.perfis, public.ministerios, public.membros, public.convites,
-  public.musicas, public.setlists, public.execucoes, public.sugestoes to authenticated;
+  public.musicas, public.setlists, public.execucoes, public.sugestoes, public.eventos to authenticated;
 revoke execute on all functions in schema public from public, anon;
 grant execute on function public.garantir_perfil(text), public.criar_ministerio(text, jsonb), public.ver_convite(text),
   public.aceitar_convite(text), public.responder_escala(text, text, text), public.sair_do_ministerio(text),
+  public.salvar_escala(text, jsonb), public.tem_permissao(text, text),
   public.e_membro(text), public.e_admin(text), public.pode_editar_musicas(text),
   public.compartilha_ministerio(uuid), public.e_admin_de(uuid) to authenticated;
 -- ver_convite também pode ser chamado antes do login (só mostra o nome do ministério)

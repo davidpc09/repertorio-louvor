@@ -35,7 +35,7 @@ export function renderSongs() {
 
     if (!rows.length) {
       listBox.appendChild(emptyState('Nenhuma música encontrada', songs.length ? 'Tente outra busca ou limpe os filtros.' : 'Cadastre a primeira música ou importe uma planilha.',
-        store.canEditSongs() ? el('a', { class: 'btn primary', href: '#/musica/nova' }, 'Nova música') : null));
+        store.canAddSongs() ? el('a', { class: 'btn primary', href: '#/musica/nova' }, 'Nova música') : null));
       return;
     }
     listBox.appendChild(el('p', { class: 'small muted', style: { margin: '0 0 8px' } }, `${rows.length} música${rows.length > 1 ? 's' : ''}`));
@@ -74,7 +74,7 @@ export function renderSongs() {
   return el('div', null,
     el('div', { class: 'page-head' },
       el('div', { class: 'grow' }, el('h1', null, 'Músicas'), el('p', null, 'Repertório do ' + (store.currentMinistry()?.name || 'ministério'))),
-      store.canEditSongs() ? el('a', { class: 'btn primary', href: '#/musica/nova' }, icon('plus'), 'Nova música') : null),
+      store.canAddSongs() ? el('a', { class: 'btn primary', href: '#/musica/nova' }, icon('plus'), 'Nova música') : null),
     el('div', { class: 'row', style: { marginBottom: '12px' } },
       el('div', { class: 'search' }, icon('search'), searchInput),
       select([['az', 'A–Z'], ['mais', 'Mais tocadas'], ['antigas', 'Há mais tempo sem tocar'], ['recentes', 'Tocadas recentemente']], filters.sort, { style: { width: 'auto' }, 'aria-label': 'Ordenar', onchange: (e) => { filters.sort = e.target.value; draw(); } }),
@@ -126,7 +126,7 @@ export function renderSongDetail(id) {
         el('h1', null, song.title),
         el('p', null, [song.artist, song.composer && song.composer !== song.artist ? 'comp. ' + song.composer : null].filter(Boolean).join(' · '))),
       el('div', { class: 'row' },
-        v ? el('a', { class: 'btn primary', href: '#/player/' + v.id }, icon('headphones'), 'Ensaiar no player') : null,
+        v && store.canUsePlayer() ? el('a', { class: 'btn primary', href: '#/player/' + v.id }, icon('headphones'), 'Ensaiar no player') : null,
         canEdit ? el('a', { class: 'btn', href: '#/musica/' + song.id + '/editar' }, icon('edit'), 'Editar') : null,
         !canEdit ? el('button', { class: 'btn', onclick: () => suggestDialog(song) }, 'Sugerir alteração') : null)),
 
@@ -199,7 +199,7 @@ function suggestDialog(song) {
 
 // ---------------- Edição ----------------
 export function renderSongEdit(id) {
-  if (!store.canEditSongs()) return emptyState('Sem permissão para editar', 'Você pode sugerir alterações na página da música.', el('a', { class: 'btn', href: id ? '#/musica/' + id : '#/musicas' }, 'Voltar'));
+  if (id ? !store.canEditSongs() : !store.canAddSongs()) return emptyState(id ? 'Sem permissão para editar' : 'Sem permissão para adicionar músicas', 'Você pode sugerir alterações na página da música.', el('a', { class: 'btn', href: id ? '#/musica/' + id : '#/musicas' }, 'Voltar'));
   const existing = id ? store.findSong(id) : null;
   if (id && !existing) return emptyState('Música não encontrada', '', null);
   const draft = JSON.parse(JSON.stringify(existing || store.newSong()));
@@ -325,7 +325,7 @@ export function renderSongEdit(id) {
     el('div', { class: 'page-head' },
       el('div', { class: 'grow' }, el('h1', null, existing ? 'Editar música' : 'Nova música')),
       el('div', { class: 'row' },
-        existing && store.isAdmin() ? el('button', { class: 'btn danger', onclick: remove }, icon('trash'), 'Excluir') : null,
+        existing && store.canRemoveSongs() ? el('button', { class: 'btn danger', onclick: remove }, icon('trash'), 'Excluir') : null,
         el('button', { class: 'btn primary', onclick: save }, icon('check'), 'Salvar'))),
     el('section', { class: 'card stack' },
       el('div', { class: 'form-grid' },

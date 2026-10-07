@@ -2,6 +2,8 @@ import { el, clear, field, input, textarea, select, toast, modal, confirmBox, ui
 import { icon } from '../icons.js';
 import * as store from '../store.js';
 import { go } from '../nav.js';
+import { agendaItems } from '../calendar.js';
+import { calendarButtons } from './agenda.js';
 import { KEYS, semitonesBetween, renderSheet, transposeKey } from '../music.js';
 
 const STATUS_LABEL = { rascunho: 'rascunho', publicado: 'publicado', realizado: 'realizado' };
@@ -117,7 +119,7 @@ export function renderSetlistDetail(id) {
       el('button', { class: 'icon-btn', 'aria-label': 'Subir', disabled: i === 0, onclick: () => update((x) => { [x.items[i - 1], x.items[i]] = [x.items[i], x.items[i - 1]]; }) }, icon('up', 18)),
       el('button', { class: 'icon-btn', 'aria-label': 'Descer', disabled: i === sl.items.length - 1, onclick: () => update((x) => { [x.items[i + 1], x.items[i]] = [x.items[i], x.items[i + 1]]; }) }, icon('down', 18)),
       el('button', { class: 'icon-btn', 'aria-label': 'Remover', onclick: () => update((x) => { x.items.splice(i, 1); }) }, icon('x', 18)))
-      : el('div', { class: 'controls' }, el('span', { class: 'key-badge' }, it.key || '—'), v ? el('a', { class: 'btn small', href: '#/player/' + v.id }, icon('headphones'), 'Ensaiar') : null);
+      : el('div', { class: 'controls' }, el('span', { class: 'key-badge' }, it.key || '—'), v && store.canUsePlayer() ? el('a', { class: 'btn small', href: '#/player/' + v.id }, icon('headphones'), 'Ensaiar') : null);
 
     itemsBox.appendChild(el('div', { class: 'setlist-item' },
       el('span', { class: 'pos' }, i + 1),
@@ -137,7 +139,7 @@ export function renderSetlistDetail(id) {
   }), sl) : null;
 
   // ---- Escala ----
-  const rosterBox = renderRoster(sl, admin, me, update);
+  const rosterBox = renderRoster(sl, admin || (store.canRoster() && sl.ministryId === s.session.ministryId), me, update);
 
   // ---- Cabeçalho ----
   const headFields = admin ? (() => {
@@ -170,6 +172,7 @@ export function renderSetlistDetail(id) {
     el('div', { class: 'row' },
       el('button', { class: 'btn primary', onclick: () => openWorshipMode(sl.id), disabled: !sl.items.length }, icon('screen'), 'Modo culto'),
       el('button', { class: 'btn', onclick: () => exportDialog(sl) }, icon('share'), 'Enviar / exportar'),
+      el('button', { class: 'btn', onclick: () => addToCalendar(sl) }, icon('calendar'), 'Minha agenda'),
       admin && sl.status === 'rascunho' ? el('button', { class: 'btn', onclick: () => { update((x) => { x.status = 'publicado'; }); toast('Setlist publicado para a equipe'); } }, 'Publicar') : null,
       admin && sl.status !== 'realizado' ? el('button', { class: 'btn', onclick: () => { store.markSetlistDone(sl.id, true); toast('Registrado no histórico'); }, title: 'Conta as músicas nos relatórios' }, icon('check'), 'Marcar como realizado') : null,
       admin && sl.status === 'realizado' ? el('button', { class: 'btn', onclick: () => store.markSetlistDone(sl.id, false) }, 'Desfazer realizado') : null,
@@ -257,6 +260,12 @@ function exportDialog(sl) {
         el('button', { class: 'btn', onclick: () => { downloadBlob(new Blob([ta.value], { type: 'text/plain;charset=utf-8' }), name); toast('Arquivo salvo'); } }, icon('download', 16), 'Baixar .txt')),
     ],
   });
+}
+
+function addToCalendar(sl) {
+  const it = agendaItems({}).find((x) => x.kind === 'setlist' && x.id === sl.id);
+  if (!it) return;
+  modal({ title: 'Adicionar à minha agenda', body: [el('p', null, `${it.title} · ${fmtDate(it.date)}${it.start ? ' às ' + it.start : ''}`), calendarButtons(it, false)] });
 }
 
 function copyText(text) {

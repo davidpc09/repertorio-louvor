@@ -24,7 +24,7 @@ export function renderLogin() {
         users.map((u) => {
           const roles = u.memberships.map((m) => {
             const min = s.ministries.find((x) => x.id === m.ministryId);
-            return `${min?.name || ''}: ${m.role === 'admin' ? 'admin' : m.canEdit ? 'membro (pode editar)' : 'membro'}`;
+            return `${min?.name || ''}: ${m.role === 'admin' ? 'admin' : 'membro' + (m.permissions?.length ? ' (' + m.permissions.map((p) => ({ player: 'player', musicas_adicionar: 'adiciona', musicas_editar: 'edita', musicas_remover: 'remove', escala: 'escala', eventos: 'eventos' })[p]).join(', ') + ')' : ' (só consulta)')}`;
           }).join(' · ');
           return el('button', { class: 'user-pick', onclick: () => store.login(u.id) },
             el('span', { class: 'avatar' }, initials(u.name)),

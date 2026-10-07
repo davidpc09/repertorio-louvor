@@ -12,6 +12,7 @@ import { renderReports } from './views/reports.js';
 import { renderTeam } from './views/team.js';
 import { renderMore } from './views/more.js';
 import { renderPlayer } from './views/player.js';
+import { renderAgenda } from './views/agenda.js';
 import { setRenderer, path, go } from './nav.js';
 
 const app = document.getElementById('app');
@@ -26,31 +27,39 @@ const ROUTES = [
   [/^\/setlists$/, () => renderSetlists()],
   [/^\/setlist\/([^/]+)\/culto$/, (m) => { const v = renderSetlistDetail(m[1]); setTimeout(() => openWorshipMode(m[1]), 0); return v; }],
   [/^\/setlist\/([^/]+)$/, (m) => renderSetlistDetail(m[1])],
-  [/^\/player$/, () => renderPlayer(null)],
-  [/^\/player\/([^/]+)$/, (m) => renderPlayer(m[1])],
+  [/^\/player$/, () => (store.canUsePlayer() ? renderPlayer(null) : noPlayer())],
+  [/^\/player\/([^/]+)$/, (m) => (store.canUsePlayer() ? renderPlayer(m[1]) : noPlayer())],
+  [/^\/agenda$/, () => renderAgenda()],
   [/^\/importar$/, () => renderImport()],
   [/^\/relatorios$/, () => renderReports()],
   [/^\/equipe$/, () => renderTeam()],
   [/^\/mais$/, () => renderMore()],
 ];
 
+// [caminho, nome, ícone, quem vê]
 const NAV = [
   ['/', 'Início', 'home'],
   ['/musicas', 'Músicas', 'music'],
   ['/setlists', 'Setlists', 'list'],
-  ['/player', 'Player', 'headphones'],
+  ['/agenda', 'Agenda', 'calendar'],
+  ['/player', 'Player', 'headphones', () => store.canUsePlayer()],
   ['/relatorios', 'Relatórios', 'chart'],
   ['/equipe', 'Equipe', 'users'],
-  ['/importar', 'Importar planilha', 'upload', true],
+  ['/importar', 'Importar planilha', 'upload', () => store.canAddSongs()],
   ['/mais', 'Mais', 'more'],
 ];
 const TABS = [
   ['/', 'Início', 'home'],
   ['/musicas', 'Músicas', 'music'],
   ['/setlists', 'Setlists', 'list'],
-  ['/player', 'Player', 'headphones'],
+  ['/agenda', 'Agenda', 'calendar'],
+  ['/player', 'Player', 'headphones', () => store.canUsePlayer()],
   ['/mais', 'Mais', 'more'],
 ];
+
+function noPlayer() {
+  return el('div', { class: 'empty' }, el('strong', null, 'Player não liberado'), el('p', null, 'O administrador do ministério libera o player para quem precisa usá-lo.'), el('a', { class: 'btn', href: '#/' }, 'Voltar ao início'));
+}
 
 function isActive(navPath, current) {
   if (navPath === '/') return current === '/';
@@ -65,7 +74,8 @@ function layout(content) {
   const admin = store.isAdmin();
   const pendingSuggestions = admin ? s.suggestions.filter((x) => x.status === 'pendente' && store.findSong(x.songId)?.ministryId === s.session.ministryId).length : 0;
 
-  const navLinks = NAV.filter((n) => !n[3] || admin).map(([p, label, ic]) => el('a', { href: '#' + p, class: 'navlink' + (isActive(p, current) ? ' active' : '') },
+  const visible = (n) => !n[3] || n[3]();
+  const navLinks = NAV.filter(visible).map(([p, label, ic]) => el('a', { href: '#' + p, class: 'navlink' + (isActive(p, current) ? ' active' : '') },
     icon(ic), label, p === '/mais' && pendingSuggestions ? el('span', { class: 'count' }, pendingSuggestions) : null));
 
   const ministries = user.memberships.map((m) => s.ministries.find((x) => x.id === m.ministryId)).filter(Boolean);
@@ -77,23 +87,23 @@ function layout(content) {
   return el('div', { class: 'shell' },
     el('nav', { class: 'sidenav', 'aria-label': 'Principal' },
       el('div', { class: 'brand' }, el('div', { class: 'brand-mark' }, 'R'), el('div', null, el('b', null, 'Repertório'), el('small', null, 'Louvor'))),
-      navLinks.slice(0, 6),
+      navLinks.filter((a) => !/#\/(importar|mais)$/.test(a.getAttribute('href'))),
       el('div', { class: 'nav-sep' }),
-      navLinks.slice(6)),
+      navLinks.filter((a) => /#\/(importar|mais)$/.test(a.getAttribute('href')))),
     el('div', { class: 'main' },
       el('header', { class: 'topbar' },
         el('span', { class: 'mobile-brand' }, 'Repertório'),
         minSelect,
         el('span', { class: 'spacer' }),
-        store.mode === 'cloud' ? el('button', { class: 'sync-dot', id: 'sync-dot', onclick: () => sync.refreshNow(), title: 'Sincronização' }, el('i')) : el('span', { class: 'pill warn', title: 'Os dados ficam só neste aparelho' }, 'demonstração'),
+        store.mode === 'cloud' ? el('button', { class: 'sync-dot', id: 'sync-dot', dataset: { state: sync.status.state }, onclick: () => sync.refreshNow(), title: 'Sincronização', 'aria-label': 'Sincronização' }, el('i')) : el('span', { class: 'pill warn', title: 'Os dados ficam só neste aparelho' }, 'demonstração'),
         el('button', { class: 'user-chip', onclick: () => go('/mais'), title: 'Conta e configurações' },
           el('span', { class: 'avatar' }, initials(user.name)),
           el('span', { class: 'uname small' }, user.name),
           el('span', { class: 'pill ' + (admin ? 'accent' : '') }, admin ? 'admin' : 'membro'))),
       !store.storageOk ? el('div', { class: 'demo-banner' }, 'Este navegador não está guardando dados. As alterações valem só até fechar a página; use Mais → Exportar backup.') : null,
       el('main', { class: 'content', id: 'content' }, content)),
-    el('nav', { class: 'tabbar', 'aria-label': 'Abas' },
-      TABS.map(([p, label, ic]) => el('a', { href: '#' + p, class: isActive(p, current) ? 'active' : '' }, icon(ic), label))));
+    el('nav', { class: 'tabbar', 'aria-label': 'Abas', style: { gridTemplateColumns: `repeat(${TABS.filter(visible).length}, 1fr)` } },
+      TABS.filter(visible).map(([p, label, ic]) => el('a', { href: '#' + p, class: isActive(p, current) ? 'active' : '' }, icon(ic), label))));
 }
 
 // ---------- Modo nuvem ----------

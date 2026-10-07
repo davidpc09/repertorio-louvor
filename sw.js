@@ -1,6 +1,6 @@
 // Service worker: guarda o app no aparelho para abrir sem internet.
 // Ao publicar uma versão nova, aumente VERSION para os aparelhos atualizarem.
-const VERSION = 'repertorio-v0.3.0';
+const VERSION = 'repertorio-v0.4.0';
 const SHELL = [
   './',
   './index.html',
@@ -18,6 +18,8 @@ const SHELL = [
   './js/icons.js',
   './js/store.js',
   './js/music.js',
+  './js/calendar.js',
+  './js/views/agenda.js',
   './js/importer.js',
   './js/audio/engine.js',
   './js/audio/analysis.js',

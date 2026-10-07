@@ -2,6 +2,7 @@ import { el, fmtDate, today, daysBetween, pill } from '../dom.js';
 import { icon } from '../icons.js';
 import * as store from '../store.js';
 import { rosterStatusPill, setRosterStatus } from './setlists.js';
+import { agendaItems, googleCalendarUrl } from '../calendar.js';
 
 export function renderHome() {
   const s = store.getState();
@@ -66,6 +67,16 @@ export function renderHome() {
                 el('button', { class: 'btn small', onclick: () => setRosterStatus(sl.id, r.id, 'recusado') }, 'Não posso'))
               : rosterStatusPill(r.status))))
           : el('p', { class: 'muted' }, 'Você não está escalado nas próximas datas.'))),
+
+    (() => {
+      const evs = agendaItems({ from: t }).filter((x) => x.kind === 'event').slice(0, 3);
+      return el('section', { class: 'card' },
+        el('div', { class: 'card-head' }, el('h2', null, 'Próximos compromissos'), el('a', { href: '#/agenda', class: 'small' }, 'Agenda')),
+        evs.length ? el('div', { class: 'stack', style: { gap: '8px' } }, evs.map((it) => el('div', { class: 'row', style: { justifyContent: 'space-between' } },
+          el('div', null, el('b', null, it.title), el('br'), el('span', { class: 'small muted' }, [fmtDate(it.date), it.start, it.location].filter(Boolean).join(' · '))),
+          el('a', { class: 'btn small', href: googleCalendarUrl(it), target: '_blank', rel: 'noopener', title: 'Adicionar ao Google Agenda' }, icon('calendar', 16), 'Agenda'))))
+          : el('p', { class: 'muted' }, 'Nenhum ensaio ou reunião marcado.'));
+    })(),
 
     el('div', { class: 'grid3' },
       stat('Músicas no repertório', songs.length),

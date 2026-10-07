@@ -120,7 +120,7 @@ export function renderMore() {
       el('p', null, el('b', null, 'Android: '), 'abra no Chrome, toque no menu ⋮ e em “Instalar app” ou “Adicionar à tela inicial”.'),
       el('p', { class: 'small muted' }, 'Instalado, o app abre em tela cheia e funciona sem internet depois do primeiro acesso.')),
 
-    el('p', { class: 'small muted' }, `Repertório Louvor · versão 0.3 · ${cloud ? 'dados na nuvem' : 'demonstração local'}`));
+    el('p', { class: 'small muted' }, `Repertório Louvor · versão 0.4 · ${cloud ? 'dados na nuvem' : 'demonstração local'}`));
 }
 
 function syncCard() {

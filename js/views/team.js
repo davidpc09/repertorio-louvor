@@ -4,6 +4,33 @@ import * as store from '../store.js';
 import * as sync from '../cloud/sync.js';
 import { friendlyError } from '../cloud/client.js';
 
+const SHORT = { player: 'player', musicas_adicionar: 'adiciona', musicas_editar: 'edita', musicas_remover: 'remove', escala: 'escala', eventos: 'eventos' };
+function permSummary(perms = []) {
+  if (!perms.length) return el('span', { class: 'small muted' }, 'só consulta');
+  const songs = ['musicas_adicionar', 'musicas_editar', 'musicas_remover'].filter((p) => perms.includes(p)).map((p) => SHORT[p]);
+  const parts = [perms.includes('player') ? 'player' : null, songs.length ? 'músicas: ' + songs.join('/') : null, perms.includes('escala') ? 'escala' : null, perms.includes('eventos') ? 'eventos' : null].filter(Boolean);
+  return el('span', { class: 'small muted' }, parts.join(' · '));
+}
+
+/** Caixas de permissão. Administrador tem todas; as caixas ficam desativadas nesse caso. */
+function permissionPicker(initial, roleSelect) {
+  const set = new Set(initial || []);
+  const boxes = store.PERMISSIONS.map(([k, label]) => {
+    const id = 'perm-' + k + '-' + Math.random().toString(36).slice(2, 6);
+    const cb = el('input', { type: 'checkbox', id, checked: set.has(k), onchange: (e) => { e.target.checked ? set.add(k) : set.delete(k); } });
+    return { cb, node: el('label', { for: id }, cb, label) };
+  });
+  const note = el('p', { class: 'small muted', hidden: true }, 'Administradores podem tudo.');
+  const sync = () => {
+    const isAdmin = roleSelect?.value === 'admin';
+    boxes.forEach((b) => { b.cb.disabled = isAdmin; });
+    note.hidden = !isAdmin;
+  };
+  roleSelect?.addEventListener('change', sync);
+  sync();
+  return { node: el('div', { class: 'field' }, el('label', null, 'Pode'), el('div', { class: 'perm-list' }, boxes.map((b) => b.node)), note), values: () => [...set] };
+}
+
 export function renderTeam() {
   const s = store.getState();
   const mid = s.session.ministryId;
@@ -21,7 +48,8 @@ export function renderTeam() {
         el('div', { class: 'sub' }, [(u.functions || []).join(', '), u.email].filter(Boolean).join(' · ')),
         nextUnavail.length ? el('div', { class: 'small muted' }, 'Indisponível: ' + nextUnavail.slice(0, 3).map((d) => fmtDate(d, false)).join(', ')) : null),
       el('div', { class: 'meta' },
-        pill(m.role === 'admin' ? 'admin' : m.canEdit ? 'membro · edita músicas' : 'membro', m.role === 'admin' ? 'accent' : ''),
+        pill(m.role === 'admin' ? 'admin' : 'membro', m.role === 'admin' ? 'accent' : ''),
+        m.role !== 'admin' ? permSummary(m.permissions) : null,
         admin || u.id === me.id ? el('button', { class: 'btn small', onclick: () => editMember(u) }, icon('edit'), 'Editar') : null));
   };
 
@@ -48,7 +76,7 @@ function pendingInvites() {
     el('div', { class: 'list' }, list.map((c) => el('div', { class: 'list-item', style: { flexWrap: 'wrap' } },
       el('div', { class: 'grow', style: { minWidth: '160px' } },
         el('div', { class: 'title' }, c.name || 'Sem nome'),
-        el('div', { class: 'sub' }, [c.role === 'admin' ? 'administrador' : c.canEdit ? 'membro · edita músicas' : 'membro', (c.functions || []).join(', '), 'vence ' + fmtDate(String(c.expiresAt).slice(0, 10), false)].filter(Boolean).join(' · '))),
+        el('div', { class: 'sub' }, [c.role === 'admin' ? 'administrador' : 'membro', (c.functions || []).join(', '), 'vence ' + fmtDate(String(c.expiresAt).slice(0, 10), false)].filter(Boolean).join(' · '))),
       el('div', { class: 'meta' },
         el('button', { class: 'btn small', onclick: () => showInviteLink(sync.inviteLink(c.id), c.name) }, icon('share', 16), 'Link'),
         el('button', { class: 'btn small danger', 'aria-label': 'Cancelar convite', onclick: async () => {
@@ -61,7 +89,7 @@ function inviteDialog() {
   const s = store.getState();
   const name = input({ placeholder: 'Nome da pessoa' });
   const role = select([['membro', 'Membro (cantor ou músico)'], ['admin', 'Administrador']], 'membro');
-  const canEdit = el('input', { type: 'checkbox', id: 'inv-edit' });
+  const perms = permissionPicker(store.DEFAULT_PERMISSIONS, role);
   const chosen = new Set();
   const funcs = el('div', { class: 'chips' }, s.settings.functions.map((f) => {
     const b = el('button', { type: 'button', class: 'chip', onclick: () => { chosen.has(f) ? chosen.delete(f) : chosen.add(f); b.classList.toggle('on'); } }, f);
@@ -73,14 +101,14 @@ function inviteDialog() {
       field('Nome', name),
       el('div', { class: 'field' }, el('label', null, 'Funções'), funcs),
       field('Papel', role),
-      el('label', { class: 'row small', for: 'inv-edit' }, canEdit, 'Pode editar músicas sem aprovação'),
+      perms.node,
       el('p', { class: 'small muted' }, 'Vamos gerar um link que vale por 30 dias e serve para uma pessoa.'),
     ],
     actions: [
       { label: 'Cancelar', kind: 'ghost' },
       { label: 'Gerar link', kind: 'primary', onClick: async () => {
         try {
-          const link = await sync.createInvite({ ministryId: s.session.ministryId, name: name.value.trim(), role: role.value, canEdit: canEdit.checked, functions: [...chosen] });
+          const link = await sync.createInvite({ ministryId: s.session.ministryId, name: name.value.trim(), role: role.value, permissions: perms.values(), functions: [...chosen] });
           setTimeout(() => showInviteLink(link, name.value.trim()), 50);
         } catch (e) { toast(friendlyError(e), 'bad'); return true; }
       } },
@@ -111,9 +139,9 @@ function editMember(user) {
   const mid = s.session.ministryId;
   const admin = store.isAdmin();
   const isNew = !user;
-  const u = user ? JSON.parse(JSON.stringify(user)) : { id: uid('u'), name: '', email: '', functions: [], memberships: [{ ministryId: mid, role: 'membro', canEdit: false }], unavailable: [], active: true };
+  const u = user ? JSON.parse(JSON.stringify(user)) : { id: uid('u'), name: '', email: '', functions: [], memberships: [{ ministryId: mid, role: 'membro', permissions: [...store.DEFAULT_PERMISSIONS] }], unavailable: [], active: true };
   let m = u.memberships.find((x) => x.ministryId === mid);
-  if (!m) { m = { ministryId: mid, role: 'membro', canEdit: false }; u.memberships.push(m); }
+  if (!m) { m = { ministryId: mid, role: 'membro', permissions: [...store.DEFAULT_PERMISSIONS] }; u.memberships.push(m); }
 
   const name = input({ value: u.name, placeholder: 'Nome' });
   const email = input({ type: 'email', value: u.email, placeholder: 'email@exemplo.com', readonly: store.mode === 'cloud' });
@@ -125,8 +153,8 @@ function editMember(user) {
     return b;
   }));
   const role = select([['membro', 'Membro'], ['admin', 'Administrador']], m.role);
-  const canEdit = el('input', { type: 'checkbox', checked: !!m.canEdit, id: 'can-edit' });
-  const active = el('input', { type: 'checkbox', checked: u.active !== false, id: 'is-active' });
+  const perms = permissionPicker(m.permissions, role);
+  const active = el('input', { type: 'checkbox', checked: m.active !== false && u.active !== false, id: 'is-active' });
 
   const dates = el('div', { class: 'row' });
   const drawDates = () => {
@@ -146,8 +174,8 @@ function editMember(user) {
       el('div', { class: 'field' }, el('label', null, 'Funções'), funcs),
       canAdminThis ? el('div', { class: 'form-grid' },
         field('Papel neste ministério', role),
-        el('label', { class: 'row small', for: 'can-edit' }, canEdit, 'Pode editar músicas sem aprovação'),
         !isNew ? el('label', { class: 'row small', for: 'is-active' }, active, 'Ativo') : null) : null,
+      canAdminThis ? perms.node : null,
       el('div', { class: 'field' }, el('label', null, 'Datas em que não pode servir'), dates,
         el('div', { class: 'row' }, newDate, el('button', { type: 'button', class: 'btn small', onclick: () => {
           if (newDate.value && !u.unavailable.includes(newDate.value)) { u.unavailable.push(newDate.value); drawDates(); }
@@ -169,8 +197,9 @@ function editMember(user) {
         u.email = email.value.trim();
         if (canAdminThis) {
           m.role = role.value;
-          m.canEdit = canEdit.checked;
-          u.active = active.checked;
+          m.permissions = perms.values();
+          m.active = active.checked;
+          u.active = u.memberships.some((x) => x.active !== false);
         }
         // evita ficar sem nenhum administrador
         const admins = s.users.filter((x) => x.id !== u.id && x.memberships.some((mm) => mm.ministryId === mid && mm.role === 'admin'));

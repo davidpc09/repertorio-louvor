@@ -51,7 +51,8 @@ function persist(state) {
 // ---------- Conversão entre o servidor e o estado local ----------
 const J = (x) => JSON.stringify(x);
 const profileOf = (u) => ({ nome: u.name || '', email: u.email || '', funcoes: u.functions || [], indisponiveis: u.unavailable || [], tom_preferido: u.preferredKey || null });
-const memberOf = (m) => ({ papel: m.role, pode_editar: !!m.canEdit, ativo: m.active !== false });
+const memberOf = (m) => ({ papel: m.role, permissoes: m.permissions || [], pode_editar: (m.permissions || []).includes('musicas_editar'), ativo: m.active !== false });
+const eventOf = (e) => ({ ministerio_id: e.ministryId, data: e.date || null, dados: e });
 const ministryOf = (m) => ({ nome: m.name, config: m.config || {} });
 const execOf = (e) => ({ ministerio_id: e.ministryId, musica_id: e.songId, versao_id: e.versionId || null, setlist_id: e.setlistId || null, data: e.date });
 const suggestionOf = (g) => ({ ministerio_id: g.ministryId || store.findSong(g.songId)?.ministryId, musica_id: g.songId, usuario_id: g.userId, texto: g.text, status: g.status });
@@ -66,6 +67,7 @@ function localEntities(s) {
   for (const m of s.ministries) out.set(`ministerios:${m.id}`, { table: 'ministerios', id: m.id, min: m.id, json: J(ministryOf(m)), obj: m });
   for (const x of s.songs) out.set(`musicas:${x.id}`, { table: 'musicas', id: x.id, min: x.ministryId, json: J(x), obj: x });
   for (const x of s.setlists) out.set(`setlists:${x.id}`, { table: 'setlists', id: x.id, min: x.ministryId, json: J(x), obj: x });
+  for (const x of s.events || []) out.set(`eventos:${x.id}`, { table: 'eventos', id: x.id, min: x.ministryId, json: J(x), obj: x });
   for (const x of s.executions) out.set(`execucoes:${x.id}`, { table: 'execucoes', id: x.id, min: x.ministryId, json: J(execOf(x)), obj: x });
   for (const x of s.suggestions) out.set(`sugestoes:${x.id}`, { table: 'sugestoes', id: x.id, min: x.ministryId, json: J(suggestionOf(x)), obj: x });
   return out;
@@ -76,7 +78,7 @@ function myRole(s, min) {
   return me?.memberships?.find((m) => m.ministryId === min) || null;
 }
 const isAdminOf = (s, min) => myRole(s, min)?.role === 'admin';
-const canEditSongsOf = (s, min) => { const r = myRole(s, min); return !!r && (r.role === 'admin' || r.canEdit); };
+const hasPerm = (s, min, perm) => { const r = myRole(s, min); return !!r && r.active !== false && (r.role === 'admin' || (r.permissions || []).includes(perm)); };
 
 function canWrite(s, e, isNew) {
   switch (e.table) {
@@ -85,7 +87,8 @@ function canWrite(s, e, isNew) {
     case 'ministerios':
     case 'setlists':
     case 'execucoes': return isAdminOf(s, e.min);
-    case 'musicas': return canEditSongsOf(s, e.min);
+    case 'musicas': return hasPerm(s, e.min, isNew ? 'musicas_adicionar' : 'musicas_editar');
+    case 'eventos': return hasPerm(s, e.min, 'eventos');
     case 'sugestoes': return isAdminOf(s, e.min) || (isNew && e.obj.userId === userId);
     default: return false;
   }
@@ -146,7 +149,7 @@ function applyServer(s, data, { full }) {
         const mk = `membros:${r.ministerio_id}:${p.id}`;
         let m = u.memberships.find((x) => x.ministryId === r.ministerio_id);
         if (isDirty(local, mk) && m) { keep.push(m); continue; }
-        const next = { ministryId: r.ministerio_id, role: r.papel, canEdit: !!r.pode_editar, active: r.ativo !== false };
+        const next = { ministryId: r.ministerio_id, role: r.papel, permissions: r.permissoes || (r.pode_editar ? ['player', 'musicas_adicionar', 'musicas_editar'] : ['player']), active: r.ativo !== false };
         if (!m || J(m) !== J(next)) { m = next; changed = true; }
         keep.push(m);
         setSnap(mk, J(memberOf(m)));
@@ -168,6 +171,7 @@ function applyServer(s, data, { full }) {
   const lists = [
     ['musicas', 'songs', (r) => store.normalizeSong({ ...r.dados, id: r.id, ministryId: r.ministerio_id }), (x) => J(x)],
     ['setlists', 'setlists', (r) => store.normalizeSetlist({ ...r.dados, id: r.id, ministryId: r.ministerio_id, date: r.dados?.date || r.data }), (x) => J(x)],
+    ['eventos', 'events', (r) => ({ ...r.dados, id: r.id, ministryId: r.ministerio_id, date: r.dados?.date || r.data }), (x) => J(x)],
     ['execucoes', 'executions', (r) => ({ id: r.id, ministryId: r.ministerio_id, songId: r.musica_id, versionId: r.versao_id, setlistId: r.setlist_id, date: r.data }), (x) => J(execOf(x))],
     ['sugestoes', 'suggestions', (r) => ({ id: r.id, ministryId: r.ministerio_id, songId: r.musica_id, userId: r.usuario_id, text: r.texto, status: r.status, createdAt: r.criado_em }), (x) => J(suggestionOf(x))],
   ];
@@ -203,7 +207,7 @@ function applyServer(s, data, { full }) {
   }
 
   if (data.convites) {
-    const inv = data.convites.map((c) => ({ id: c.id, ministryId: c.ministerio_id, name: c.nome, role: c.papel, canEdit: c.pode_editar, functions: c.funcoes || [], createdAt: c.criado_em, expiresAt: c.expira_em }));
+    const inv = data.convites.map((c) => ({ id: c.id, ministryId: c.ministerio_id, name: c.nome, role: c.papel, permissions: c.permissoes || [], functions: c.funcoes || [], createdAt: c.criado_em, expiresAt: c.expira_em }));
     if (J(inv) !== J(s.invites || [])) { s.invites = inv; changed = true; }
   }
 
@@ -234,20 +238,21 @@ async function pull({ full = false, checkIds: forceIds = false } = {}) {
       musicas: api.select('musicas', `select=*&${inMin}${since('musicas')}`),
       setlists: api.select('setlists', `select=*&${inMin}${since('setlists')}`),
       execucoes: api.select('execucoes', `select=*&${inMin}${since('execucoes')}`),
+      eventos: api.select('eventos', `select=*&${inMin}${since('eventos')}`),
       sugestoes: api.select('sugestoes', `select=*&${inMin}${since('sugestoes')}`),
       convites: adminMins.length ? api.select('convites', `select=*&ministerio_id=${api.inList(adminMins)}&order=criado_em.desc`) : Promise.resolve([]),
     };
-    if (checkIds) for (const t of ['musicas', 'setlists', 'execucoes', 'sugestoes']) jobs[`${t}_ids`] = api.select(t, `select=id&${inMin}`).then((r) => r.map((x) => x.id));
+    if (checkIds) for (const t of ['musicas', 'setlists', 'execucoes', 'sugestoes', 'eventos']) jobs[`${t}_ids`] = api.select(t, `select=id&${inMin}`).then((r) => r.map((x) => x.id));
     const keys = Object.keys(jobs);
     const vals = await Promise.all(Object.values(jobs));
     keys.forEach((k, i) => { data[k] = vals[i]; });
   } else {
-    Object.assign(data, { musicas: [], setlists: [], execucoes: [], sugestoes: [], convites: [] });
+    Object.assign(data, { musicas: [], setlists: [], execucoes: [], sugestoes: [], eventos: [], convites: [] });
     full = true;
   }
   let changed = false;
   store.commit((st) => { changed = applyServer(st, data, { full }); }, { silent: true, fromSync: true });
-  for (const t of ['musicas', 'setlists', 'execucoes', 'sugestoes']) lastPull[t] = started;
+  for (const t of ['musicas', 'setlists', 'execucoes', 'sugestoes', 'eventos']) lastPull[t] = started;
   pollCount++;
   persist(store.getState());
   void s;
@@ -268,7 +273,7 @@ function countPending() {
   const local = localEntities(s);
   let n = 0;
   for (const [k, e] of local) if (snap[k] !== e.json) n++;
-  for (const k of Object.keys(snap)) if (!local.has(k) && /^(musicas|setlists|execucoes|sugestoes|membros):/.test(k)) n++;
+  for (const k of Object.keys(snap)) if (!local.has(k) && /^(musicas|setlists|execucoes|sugestoes|membros|eventos):/.test(k)) n++;
   return n;
 }
 
@@ -301,7 +306,14 @@ async function doPush() {
     if (snap[key] === e.json) continue;
     const isNew = snap[key] === undefined;
     if (!canWrite(s, e, isNew)) {
-      if (e.table === 'setlists') await answerRosterIfMine(s, e, key);
+      if (e.table === 'setlists') {
+        if (hasPerm(s, e.min, 'escala') && snap[key]) {
+          await api.rpc('salvar_escala', { p_setlist: e.id, p_roster: e.obj.roster || [] });
+          snap[key] = e.json; // a próxima busca traz a versão do servidor
+          continue;
+        }
+        await answerRosterIfMine(s, e, key);
+      }
       reverts.push(key);
       continue;
     }
@@ -311,7 +323,19 @@ async function doPush() {
   for (const key of Object.keys(snap)) {
     if (local.has(key)) continue;
     const [table, a, b] = key.split(':');
-    if (!['musicas', 'setlists', 'execucoes', 'sugestoes', 'membros'].includes(table)) continue;
+    if (!['musicas', 'setlists', 'execucoes', 'sugestoes', 'membros', 'eventos'].includes(table)) continue;
+    let ok2 = true;
+    try {
+      const prev = JSON.parse(snap[key]);
+      const min = table === 'membros' ? a : (prev.ministryId || prev.ministerio_id);
+      const need = { musicas: ['perm', 'musicas_remover'], eventos: ['perm', 'eventos'] }[table];
+      ok2 = need ? hasPerm(s, min, need[1]) : isAdminOf(s, min);
+    } catch { /* foto antiga: tenta assim mesmo */ }
+    if (!ok2) {
+      // execuções/sugestões de uma música apagada somem junto no servidor; o resto volta como estava
+      if (['execucoes', 'sugestoes', 'membros'].includes(table)) delete snap[key]; else reverts.push(key);
+      continue;
+    }
     deletions.push({ key, table, id: a, user: b, min: table === 'membros' ? a : null });
   }
 
@@ -326,7 +350,12 @@ async function doPush() {
     try { await api.update('ministerios', `id=${api.eq(it.e.id)}`, ministryOf(it.e.obj)); ok([it]); } catch (err) { errors.push(err); }
   }
   await batch('membros', changes.membros, (it) => ({ ministerio_id: it.e.min, usuario_id: it.e.id, ...memberOf(it.e.obj) }), 'ministerio_id,usuario_id');
-  await batch('musicas', changes.musicas, (it) => ({ id: it.e.id, ministerio_id: it.e.min, dados: it.e.obj }));
+  // músicas: criar e editar são permissões diferentes, por isso não usa "upsert"
+  await batch('musicas', (changes.musicas || []).filter((it) => it.isNew), (it) => ({ id: it.e.id, ministerio_id: it.e.min, dados: it.e.obj }), null);
+  for (const it of (changes.musicas || []).filter((x) => !x.isNew)) {
+    try { await api.update('musicas', `id=${api.eq(it.e.id)}`, { dados: it.e.obj }); ok([it]); } catch (err) { errors.push(err); }
+  }
+  await batch('eventos', changes.eventos, (it) => ({ id: it.e.id, ...eventOf(it.e.obj) }));
   await batch('setlists', changes.setlists, (it) => ({ id: it.e.id, ministerio_id: it.e.min, data: it.e.obj.date || null, dados: it.e.obj }));
   await batch('execucoes', changes.execucoes, (it) => ({ id: it.e.id, ...execOf(it.e.obj) }));
   // sugestões: membro só pode criar; administrador responde
@@ -339,7 +368,7 @@ async function doPush() {
   }
 
   // apagar (dependentes primeiro)
-  for (const table of ['sugestoes', 'execucoes', 'setlists', 'musicas', 'membros']) {
+  for (const table of ['sugestoes', 'execucoes', 'eventos', 'setlists', 'musicas', 'membros']) {
     for (const d of deletions.filter((x) => x.table === table)) {
       try {
         if (table === 'membros') await api.remove('membros', `ministerio_id=${api.eq(d.id)}&usuario_id=${api.eq(d.user)}`);
@@ -358,14 +387,15 @@ async function doPush() {
 
   async function batch(table, items, toRow, onConflict = 'id') {
     if (!items?.length) return;
+    const send = (rows) => (onConflict ? api.upsert(table, rows, onConflict) : api.insert(table, rows));
     try {
-      await api.upsert(table, items.map(toRow), onConflict);
+      await send(items.map(toRow));
       ok(items);
     } catch (err) {
       if (err.status === 0 || items.length === 1) { errors.push(err); return; }
       // um item com problema não pode travar os outros: tenta um por um
       for (const it of items) {
-        try { await api.upsert(table, [toRow(it)], onConflict); ok([it]); } catch (e2) { errors.push(e2); }
+        try { await send([toRow(it)]); ok([it]); } catch (e2) { errors.push(e2); }
       }
     }
   }
@@ -408,10 +438,10 @@ function revert(keys) {
         const u = s.users.find((x) => x.id === extra);
         const m = u?.memberships.find((x) => x.ministryId === id);
         const v = JSON.parse(json);
-        if (m) { m.role = v.papel; m.canEdit = v.pode_editar; m.active = v.ativo; }
+        if (m) { m.role = v.papel; m.permissions = v.permissoes || []; m.active = v.ativo; }
         continue;
       }
-      const map = { musicas: 'songs', setlists: 'setlists', execucoes: null, sugestoes: null };
+      const map = { musicas: 'songs', setlists: 'setlists', eventos: 'events', execucoes: null, sugestoes: null };
       if (!map[table] || json === undefined) continue;
       const arr = s[map[table]];
       const i = arr.findIndex((x) => x.id === id);
@@ -424,7 +454,7 @@ function revert(keys) {
     const local = localEntities(s);
     for (const key of keys) if (snap[key] === undefined && local.has(key)) {
       const [table, id] = key.split(':');
-      const map = { musicas: 'songs', setlists: 'setlists', execucoes: 'executions', sugestoes: 'suggestions' };
+      const map = { musicas: 'songs', setlists: 'setlists', eventos: 'events', execucoes: 'executions', sugestoes: 'suggestions' };
       if (map[table]) s[map[table]] = s[map[table]].filter((x) => x.id !== id);
     }
   }, { silent: true, fromSync: true });
@@ -552,9 +582,9 @@ function randomCode(n = 24) {
 
 export function inviteLink(code) { return `${api.appUrl()}#/convite/${code}`; }
 
-export async function createInvite({ ministryId, name, role, canEdit, functions }) {
+export async function createInvite({ ministryId, name, role, permissions, functions }) {
   const id = randomCode();
-  await api.insert('convites', [{ id, ministerio_id: ministryId, nome: name || '', papel: role || 'membro', pode_editar: !!canEdit, funcoes: functions || [] }]);
+  await api.insert('convites', [{ id, ministerio_id: ministryId, nome: name || '', papel: role || 'membro', permissoes: permissions || ['player'], pode_editar: (permissions || []).includes('musicas_editar'), funcoes: functions || [] }]);
   await pull();
   maybeRender(true);
   return inviteLink(id);

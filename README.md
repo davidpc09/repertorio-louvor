@@ -2,11 +2,11 @@
 
 App para o ministério de louvor: repertório de músicas, setlists, escala da equipe, relatórios e um player multipista com click. Funciona no iPhone, Android e computador, instalado pela tela inicial (PWA), e abre sem internet depois do primeiro acesso.
 
-**Versão 0.3:** login de verdade e dados compartilhados entre a equipe pelo Supabase, com convites por link. A demonstração com dados de exemplo continua disponível na tela de login. A integração com o Google Drive (áudios compartilhados) é a próxima etapa.
+**Versão 0.4:** login de verdade e dados compartilhados entre a equipe pelo Supabase, com convites por link, permissões por pessoa e agenda. A demonstração com dados de exemplo continua disponível na tela de login. A integração com o Google Drive (áudios compartilhados) é a próxima etapa.
 
 ## Ligar a versão em nuvem (uma vez)
 
-1. **Banco de dados:** no Supabase, abra **SQL Editor → New query**, cole todo o arquivo `supabase/schema.sql` e clique em **Run**. Pode rodar de novo no futuro sem perder dados.
+1. **Banco de dados:** no Supabase, abra **SQL Editor → New query**, cole todo o arquivo `supabase/schema.sql` e clique em **Run**. A cada versão nova do arquivo, rode de novo: ele só acrescenta o que falta e não apaga dados.
 2. **Confirmação de e-mail:** em **Authentication → Sign In / Providers → Email**, desligue **Confirm email** e salve. O e-mail padrão do Supabase só envia mensagens para a equipe do projeto (limite de 2 por hora), então os membros não receberiam a confirmação. Quem garante o acesso é o link de convite.
 3. **Endereços:** em **Authentication → URL Configuration**, deixe *Site URL* = `https://davidpc09.github.io/repertorio-louvor/` e adicione o mesmo endereço em *Redirect URLs*.
 4. **Chaves:** `js/config.js` já tem a URL do projeto e a *publishable key* (públicas por natureza). Nunca coloque a *secret key* nem a senha do banco no código.
@@ -17,7 +17,7 @@ App para o ministério de louvor: repertório de músicas, setlists, escala da e
 - Quem abre o link cria a conta e já entra no ministério, como membro ou administrador.
 
 ### Segurança
-- Cada pessoa só vê os ministérios dos quais participa. Membros leem; administradores e membros liberados editam músicas; só administradores mexem em setlists, escala, equipe e convites. As regras ficam no banco (Row Level Security), não no app.
+- Cada pessoa só vê os ministérios dos quais participa. O que cada membro pode fazer (músicas, escala, eventos) é conferido pelo banco (Row Level Security), não só pelo app. Setlists, equipe e convites são só dos administradores.
 - O membro só consegue confirmar ou recusar a própria escala e enviar sugestões.
 - Um ministério nunca fica sem administrador.
 - Sem internet, o app abre com a última cópia e envia as alterações quando a conexão voltar.
@@ -36,7 +36,8 @@ App para o ministério de louvor: repertório de músicas, setlists, escala da e
 | Escala | Escalar por função, membro confirma ou recusa, datas indisponíveis, conflito entre ministérios |
 | Importação | Planilhas `.xlsx`, `.csv`, `.ods` (o `.xls` antigo precisa ser salvo como `.xlsx`), com modelo para baixar e tratamento de duplicadas; importa também histórico |
 | Relatórios | Mais e menos tocadas, nunca tocadas, esquecidas, por tema, tom, artista e participação; exporta para Excel |
-| Permissões | Administrador e membro por ministério; membro sugere alterações e o admin aprova, ou recebe permissão para editar |
+| Permissões | Administrador pode tudo. Para cada membro, o administrador liga ou desliga: usar o player, adicionar, editar e remover músicas, montar escala e criar eventos. Quem não pode editar envia sugestões |
+| Agenda | Cultos (setlists) e eventos (ensaios, reuniões) num só lugar; filtro “Minhas escalas”; botões para adicionar ao Google Agenda ou baixar .ics (iPhone, Outlook), um por um ou todos |
 | Player | Multipistas sincronizadas, mixer (volume, mudo, solo, pan), click gerado no BPM com acento e contagem, click no lado L ou R, modo palco (música em mono no outro lado), partes por compasso com pular e repetir, escolha da saída de áudio onde o navegador permite |
 | Cues e mapa | Marcadores de cada parte no estilo dos locators do Ableton Live: disparo em tempo real quantizado (tempo, compasso, 2/4/8 compassos ou fim da parte), ação ao terminar (continuar, repetir, ir para outro cue, parar), mapa programado com repetições que o player segue sozinho, pads coloridos, atalhos 1–9 e suporte a pedal de virar página |
 | Tempo 0 | Forma de onda de cada faixa, detecção automática do primeiro tempo, ajuste fino por toque ou de 10 em 10 ms, grade de tempos para conferir o alinhamento |
@@ -97,6 +98,7 @@ js/cloud/sync.js        sincronização, cópia offline e convites
 js/store.js             dados, permissões e exemplos
 js/music.js             tons, transposição, compassos
 js/importer.js          leitura de CSV, XLSX e ODS sem bibliotecas
+js/calendar.js          agenda, link do Google Agenda e arquivo .ics
 js/audio/engine.js      motor do player (Web Audio)
 js/audio/analysis.js    forma de onda e detecção do tempo 0
 js/audio/cues.js        cues, quantização, ações ao terminar e mapa da música
