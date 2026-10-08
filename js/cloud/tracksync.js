@@ -255,6 +255,12 @@ async function apagarDoDriveLixeira(fileId, ministryId) {
   if (st.conectado) await drive.paraLixeira(fileId, ministryId);
 }
 
+/** Salva (cria ou atualiza) o CSV dos cues na pasta da versão, junto com as faixas. Devolve o id. */
+export async function enviarCues(song, version, csv, fileIdExistente) {
+  const pasta = await drive.pastaDaVersao(song, version);
+  return drive.enviarTexto(csv, pasta, 'Cues (Ableton).csv', fileIdExistente, song.ministryId);
+}
+
 /** Apaga a cópia do ministério no Drive (quando a faixa é removida da versão). */
 export async function apagarDoDrive(fileId, ministryId) {
   const st = await conectado(ministryId);

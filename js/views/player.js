@@ -533,6 +533,7 @@ export function renderPlayer(versionId) {
       x.sections.sort((a, b) => a.startBar - b.startBar);
     });
     toast(`Cue criado no compasso ${bar}`);
+    agendarSalvarCues();
     drawTab();
   }
 
@@ -583,16 +584,74 @@ export function renderPlayer(versionId) {
       });
       toast(`${unique.length} cues importados do arquivo`);
       cues.refreshAuto();
+      agendarSalvarCues();
       drawTab();
     };
     reader.readAsText(file);
+  }
+
+  // ---------- Exportar cues (formato Ableton / timestamps.me) ----------
+  function fmtTimestamp(secs) {
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    let s = Math.floor(secs % 60);
+    let ms = Math.round((secs - Math.floor(secs)) * 1000);
+    if (ms === 1000) { ms = 0; s += 1; }
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+  }
+
+  /** CSV no mesmo formato do import: (vazio),NOME,H:MM:SS.mmm */
+  function cuesToCSV(version) {
+    const bpm = version.bpm || 120;
+    const ts = version.timeSig || '4/4';
+    const list = [...(version.sections || [])].sort((a, b) => a.startBar - b.startBar);
+    return list.map((c) => `,${String(c.name || '').replace(/[\r\n,]/g, ' ').trim()},${fmtTimestamp(barToSeconds(c.startBar, bpm, ts))}`).join('\r\n') + '\r\n';
+  }
+
+  /** Baixa o CSV dos cues para o aparelho. */
+  function exportarCuesCSV() {
+    if (!v.sections?.length) { toast('Não há cues para exportar.', 'bad'); return; }
+    const csv = cuesToCSV(v);
+    const nome = `${v.name || 'Cues'} - ${song.title}.csv`.replace(/[\\/:*?"<>|]/g, '-');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = el('a', { href: url, download: nome });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    toast('CSV dos cues baixado');
+  }
+
+  /** Salva o CSV dos cues no Drive do ministério, junto com as faixas. */
+  async function salvarCuesNoDrive({ silencioso = false } = {}) {
+    if (!canEdit) return;
+    if (!v.sections?.length) { if (!silencioso) toast('Não há cues para salvar.', 'bad'); return; }
+    let st = { conectado: false };
+    try { st = await tracksync.conectado(song.ministryId); } catch { /* offline */ }
+    if (!st.conectado) { if (!silencioso) toast('Conecte o Google Drive em Mais › Google Drive primeiro.', 'bad'); return; }
+    const csv = cuesToCSV(v);
+    try {
+      if (!silencioso) status.textContent = 'Salvando cues no Drive…';
+      const fileId = await tracksync.enviarCues(song, v, csv, v.driveCuesFileId);
+      if (fileId !== v.driveCuesFileId) saveVersion(v.id, (x) => { x.driveCuesFileId = fileId; });
+      if (!silencioso) { toast('Cues salvos no Drive'); drawTab(); }
+    } catch (e) {
+      if (!silencioso) toast('Não consegui salvar os cues no Drive: ' + e.message, 'bad');
+    }
+  }
+
+  /** Atualiza o CSV no Drive automaticamente após mudanças, se ele já existe lá. */
+  let cuesTimer = 0;
+  function agendarSalvarCues() {
+    if (!canEdit || !v.driveCuesFileId) return;
+    clearTimeout(cuesTimer);
+    cuesTimer = setTimeout(() => salvarCuesNoDrive({ silencioso: true }), 3000);
   }
 
   // ---------- Aba Cues e mapa ----------
   function tabCues() {
     const list = sortedCues();
     const names = ['Intro', 'Verso 1', 'Verso 2', 'Pré-refrão', 'Refrão', 'Ponte', 'Solo', 'Interlúdio', 'Espontâneo', 'Refrão final', 'Tag', 'Final'];
-    const edit = (id, patch) => { saveVersion(v.id, (x) => { Object.assign(x.sections.find((c) => c.id === id), patch); }); cues.refreshAuto(); };
+    const edit = (id, patch) => { saveVersion(v.id, (x) => { Object.assign(x.sections.find((c) => c.id === id), patch); }); cues.refreshAuto(); agendarSalvarCues(); };
 
     const rows = list.map((c, i) => {
       const followSel = select([...FOLLOW, ...list.filter((o) => o.id !== c.id).map((o) => ['go:' + o.id, 'Ir para ' + o.name])], c.follow || 'next',
@@ -617,7 +676,7 @@ export function renderPlayer(versionId) {
           el('button', { class: 'btn small', title: 'Disparar', onclick: () => cues.launch(c.id) }, icon('play', 14)),
           canEdit ? el('button', { class: 'btn small danger', 'aria-label': 'Excluir cue', onclick: () => {
             saveVersion(v.id, (x) => { x.sections = x.sections.filter((y) => y.id !== c.id); x.arrangement = (x.arrangement || []).filter((st) => st.sectionId !== c.id); });
-            cues.refreshAuto(); drawTab();
+            cues.refreshAuto(); agendarSalvarCues(); drawTab();
           } }, icon('trash', 14)) : null));
     });
 
@@ -666,6 +725,7 @@ export function renderPlayer(versionId) {
               const last = list[list.length - 1];
               const startBar = last ? last.endBar + 1 : 1;
               saveVersion(v.id, (x) => { x.sections.push({ id: uid('p'), name: x.sections.length ? 'Nova parte' : 'Intro', startBar, endBar: startBar + 7, color: CUE_COLORS[x.sections.length % CUE_COLORS.length], follow: 'next' }); });
+              agendarSalvarCues();
               drawTab();
             } }, 'Cue no fim'),
             el('button', { class: 'btn small ghost', title: 'Cada parte termina um compasso antes do próximo cue', onclick: () => {
@@ -673,6 +733,10 @@ export function renderPlayer(versionId) {
               cues.refreshAuto(); toast('Fins ajustados'); drawTab();
             } }, 'Ajustar fins')) : null),
         el('p', { class: 'small muted' }, 'Cada cue marca o início de uma parte, em compassos contados a partir do tempo 0. As teclas 1 a 9 e 0 disparam os dez primeiros.'),
+        list.length ? el('div', { class: 'row', style: { flexWrap: 'wrap', gap: '6px' } },
+          el('button', { class: 'btn small ghost', title: 'Baixar os cues como CSV (formato Ableton / timestamps.me)', onclick: () => exportarCuesCSV() }, icon('download', 16), 'Exportar CSV'),
+          canEdit ? el('button', { class: 'btn small', title: 'Guardar os cues no Drive do ministério, junto com as faixas', onclick: () => salvarCuesNoDrive() }, icon('upload', 16), v.driveCuesFileId ? 'Atualizar cues no Drive' : 'Salvar cues no Drive') : null,
+          v.driveCuesFileId ? el('span', { class: 'small muted', style: { alignSelf: 'center' } }, 'No Drive ✓') : null) : null,
         list.length ? el('div', { class: 'cue-list' }, rows) : el('p', { class: 'muted' }, 'Nenhum cue ainda.')),
       el('section', { class: 'card stack' },
         el('div', { class: 'card-head' }, el('h2', null, 'Mapa da música'),

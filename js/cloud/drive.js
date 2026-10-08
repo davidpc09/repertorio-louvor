@@ -232,6 +232,31 @@ export async function apagar(fileId, ministryId) {
   try { await g(`/files/${fileId}`, { method: 'DELETE', ministryId }); } catch (e) { if (e.codigo !== 'sumiu') throw e; }
 }
 
+/**
+ * Cria ou atualiza um arquivo de texto pequeno (ex.: o CSV dos cues) numa pasta.
+ * Se fileIdExistente for informado, atualiza o conteúdo; senão, cria. Devolve o id.
+ */
+export async function enviarTexto(texto, pastaId, nome, fileIdExistente, ministryId, tipo = 'text/csv') {
+  if (fileIdExistente) {
+    try {
+      const res = await g(`${UPLOAD}/${fileIdExistente}?uploadType=media&fields=id`, {
+        method: 'PATCH', headers: { 'Content-Type': `${tipo}; charset=UTF-8` }, body: texto, ministryId,
+      });
+      return (await res.json()).id;
+    } catch (e) {
+      if (e.codigo !== 'sumiu') throw e; // arquivo apagado no Drive: cria de novo abaixo
+    }
+  }
+  const boundary = '----rl' + Math.random().toString(36).slice(2);
+  const meta = JSON.stringify({ name: nome, parents: [pastaId] });
+  const corpo = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n`
+    + `--${boundary}\r\nContent-Type: ${tipo}; charset=UTF-8\r\n\r\n${texto}\r\n--${boundary}--`;
+  const res = await g(`${UPLOAD}?uploadType=multipart&fields=id`, {
+    method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${boundary}` }, body: corpo, ministryId,
+  });
+  return (await res.json()).id;
+}
+
 /** Link para abrir a pasta no Drive, no navegador. */
 export const linkDaPasta = (id) => `https://drive.google.com/drive/folders/${id}`;
 
