@@ -94,6 +94,8 @@ export function renderMore() {
 
     driveCard(cloud, admin, mid),
 
+    arquivosCard(cloud, mid),
+
     el('section', { class: 'card stack' },
       el('h2', null, 'Dados deste aparelho'),
       el('p', { class: 'small' }, 'Espaço usado pelo app: ', usage),
@@ -119,7 +121,7 @@ export function renderMore() {
       el('p', null, el('b', null, 'Android: '), 'abra no Chrome, toque no menu ⋮ e em “Instalar app” ou “Adicionar à tela inicial”.'),
       el('p', { class: 'small muted' }, 'Instalado, o app abre em tela cheia e funciona sem internet depois do primeiro acesso.')),
 
-    el('p', { class: 'small muted' }, `Repertório Louvor · versão 0.5 · ${cloud ? 'dados na nuvem' : 'demonstração local'}`));
+    el('p', { class: 'small muted' }, `Repertório Louvor · versão 0.6 · ${cloud ? 'dados na nuvem' : 'demonstração local'}`));
 }
 
 /** Cartão "Google Drive": o administrador conecta a conta do ministério uma vez. */
@@ -171,6 +173,115 @@ function driveCard(cloud, admin, mid) {
   }
 
   pintar();
+  return card;
+}
+
+/** Cartão "Conferir arquivos de áudio": acha cópias repetidas ou sobrando no aparelho e no Drive. */
+function arquivosCard(cloud, mid) {
+  const corpo = el('div', { class: 'stack', style: { gap: '10px' } });
+  const card = el('section', { class: 'card stack' },
+    el('h2', null, 'Conferir arquivos de áudio'),
+    el('p', { class: 'small muted' }, cloud
+      ? 'Compara o que está guardado neste aparelho com a pasta do Drive do ministério e acha arquivos repetidos ou que nenhuma música usa mais. A conferência só lê: nada é apagado sem você confirmar.'
+      : 'Acha, neste aparelho, arquivos de áudio repetidos ou que nenhuma música usa mais. A conferência só lê: nada é apagado sem você confirmar.'),
+    corpo);
+  const mb = tracksync.mb;
+  const nomeDe = (song, version) => song ? `${song.title}${version?.name ? ' — ' + version.name : ''}` : 'música removida';
+  const plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
+
+  const lista = (itens) => el('ul', { class: 'small', style: { margin: '4px 0 0', paddingLeft: '18px' } },
+    itens.slice(0, 8).map((t) => el('li', null, t)),
+    itens.length > 8 ? el('li', { class: 'muted' }, `e mais ${itens.length - 8}`) : null);
+
+  const bloco = (titulo, texto, itens, botao) => el('div', { class: 'notice warn stack', style: { gap: '6px' } },
+    el('b', null, titulo), el('span', null, texto), itens?.length ? lista(itens) : null, botao ? el('div', { class: 'row' }, botao) : null);
+
+  const acao = (rotulo, perigo, titulo, aviso, fn) => el('button', { class: 'btn small' + (perigo ? ' danger' : ''), onclick: async (e) => {
+    if (!(await confirmBox(titulo, aviso, rotulo, true))) return;
+    e.currentTarget.disabled = true;
+    try { await fn(); } catch (err) { toast(err.message || 'Não consegui concluir', 'bad'); }
+    conferir();
+  } }, rotulo);
+
+  const rodape = () => el('div', { class: 'row' }, el('button', { class: 'btn', onclick: conferir }, icon('check'), 'Conferir agora'));
+
+  async function conferir() {
+    const msg = el('p', { class: 'small muted' }, 'Conferindo…');
+    corpo.replaceChildren(msg);
+    let r;
+    try {
+      r = await tracksync.auditar({ ministryId: mid, aoProgredir: (p) => { msg.textContent = `Conferindo o Drive: ${p.musica} (${p.indice} de ${p.total})…`; } });
+    } catch (e) {
+      corpo.replaceChildren(el('div', { class: 'notice bad' }, e.message || 'Não consegui conferir agora.'), rodape());
+      return;
+    }
+    desenhar(r);
+  }
+
+  function desenhar(r) {
+    const a = r.aparelho; const d = r.drive;
+    const canEdit = store.canEditSongs();
+    const partes = [];
+    const noDrive = d.versoes.reduce((n, v) => n + v.noDrive, 0);
+    const noApp = d.versoes.reduce((n, v) => n + v.noApp, 0);
+    partes.push(el('p', null, el('b', null, 'Neste aparelho: '), `${plural(a.arquivos, 'arquivo', 'arquivos')} (${mb(a.bytes) === '—' ? '0 MB' : mb(a.bytes)})`));
+    if (d.conectado) partes.push(el('p', null, el('b', null, 'No Drive: '), `${plural(noDrive, 'arquivo', 'arquivos')} nas pastas das músicas · ${plural(noApp, 'usado', 'usados')} pelas faixas cadastradas`));
+    else if (cloud) partes.push(el('p', { class: 'small muted' }, 'O Drive não está conectado, então conferi só este aparelho.'));
+    if (d.erro) partes.push(el('div', { class: 'notice warn' }, 'Não consegui conferir o Drive agora: ' + d.erro));
+
+    let problemas = 0;
+    if (a.orfas.length) {
+      problemas++;
+      const bytes = a.orfas.reduce((n, o) => n + o.size, 0);
+      partes.push(bloco('Sobrando neste aparelho',
+        `${plural(a.orfas.length, 'arquivo', 'arquivos')} (${mb(bytes)}) de faixas que não existem mais em nenhuma música.`,
+        a.orfas.map((o) => `${nomeDe(o.song, o.version)} · ${mb(o.size)}`),
+        acao('Apagar do aparelho', false, 'Apagar do aparelho', 'Apagar estes arquivos que nenhuma música usa? Isso só libera espaço neste aparelho.', async () => { const n = await tracksync.limparOrfas(a.orfas); toast(`${plural(n, 'arquivo apagado', 'arquivos apagados')} deste aparelho`); })));
+    }
+    if (a.repetidas.length) {
+      problemas++;
+      const extras = a.repetidas.reduce((n, g) => n + g.extras.length, 0);
+      partes.push(bloco('Faixas repetidas na mesma música',
+        `${plural(extras, 'cópia repetida', 'cópias repetidas')} do mesmo arquivo. Fica a faixa que já tem cópia no Drive e neste aparelho.`,
+        a.repetidas.map((g) => `${nomeDe(g.song, g.version)}: “${g.manter.name}” aparece ${g.extras.length + 1}×`),
+        canEdit ? acao('Remover repetidas', true, 'Remover faixas repetidas', 'Tirar as cópias repetidas das músicas, deste aparelho e (quando o arquivo é outro) mandar a cópia extra do Drive para a lixeira? A faixa que fica não muda.', async () => {
+          const res = await tracksync.removerRepetidas(a.repetidas);
+          toast(`${plural(res.removidas, 'faixa repetida removida', 'faixas repetidas removidas')}`);
+          for (const f of res.falhas) toast(f, 'bad');
+        }) : el('span', { class: 'small' }, 'Peça a quem edita as músicas para limpar.')));
+    }
+    const repDrive = d.versoes.flatMap((v) => v.repetidos.map((f) => ({ ...f, song: v.song, version: v.version })));
+    if (repDrive.length) {
+      problemas++;
+      partes.push(bloco('Arquivos repetidos no Drive',
+        `${plural(repDrive.length, 'arquivo extra', 'arquivos extras')} com o mesmo nome e tamanho de outro, sem nenhuma faixa usando. Vão para a lixeira do Drive (dá para recuperar por 30 dias).`,
+        repDrive.map((f) => `${nomeDe(f.song, f.version)}: ${f.name} · ${mb(f.size)}`),
+        canEdit ? acao('Mandar para a lixeira', true, 'Repetidos do Drive', 'Mandar estes arquivos repetidos para a lixeira do Drive? A cópia que as músicas usam fica onde está.', async () => {
+          const res = await tracksync.limparRepetidosDoDrive(repDrive, mid);
+          toast(`${plural(res.removidos, 'arquivo foi', 'arquivos foram')} para a lixeira do Drive`);
+          for (const f of res.falhas) toast(f, 'bad');
+        }) : el('span', { class: 'small' }, 'Peça a quem edita as músicas para limpar.')));
+    }
+    if (!problemas) partes.push(el('div', { class: 'notice ok' }, 'Tudo certo: nenhum arquivo repetido nem sobrando.'));
+
+    const livres = d.versoes.filter((v) => v.sobrando.length);
+    if (livres.length) {
+      partes.push(el('div', { class: 'notice info stack', style: { gap: '4px' } },
+        el('b', null, 'Arquivos na pasta do Drive que nenhuma faixa usa'),
+        el('span', { class: 'small' }, 'Não mexi: podem ter sido colocados à mão. Eles não vêm para o celular.'),
+        lista(livres.map((v) => `${nomeDe(v.song, v.version)}: ${v.sobrando.map((f) => f.name).join(', ')}`))));
+    }
+    if (d.versoes.length) {
+      partes.push(el('details', null, el('summary', { class: 'small' }, 'Ver por música'),
+        el('div', { class: 'stack', style: { gap: '4px', marginTop: '6px' } }, d.versoes.map((v) => el('div', { class: 'small row', style: { justifyContent: 'space-between' } },
+          el('span', null, nomeDe(v.song, v.version)),
+          v.erro ? el('span', { class: 'pill bad' }, 'não consegui ler') : el('span', { class: 'pill ' + (v.noDrive === v.noApp ? 'ok' : 'warn') }, `${v.noDrive} no Drive · ${v.noApp} nas faixas`))))));
+    }
+    partes.push(rodape());
+    corpo.replaceChildren(...partes);
+  }
+
+  corpo.append(rodape());
   return card;
 }
 

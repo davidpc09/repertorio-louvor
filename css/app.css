@@ -416,3 +416,68 @@ tr:last-child td { border-bottom: 0; }
 .agenda-date small { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
 .perm-list { display: flex; flex-direction: column; gap: 6px; }
 .perm-list label { display: flex; gap: 8px; align-items: center; font-size: .9rem; }
+
+/* ---------- Pânico ---------- */
+.panic {
+  display: inline-flex; align-items: center; gap: 10px; min-height: 56px; padding: 8px 16px; border-radius: 12px;
+  border: 2px solid var(--bad); background: var(--bad-soft); color: var(--bad); cursor: pointer; text-align: left;
+  font: inherit; touch-action: manipulation; user-select: none; -webkit-user-select: none;
+}
+.panic .panic-text { display: flex; flex-direction: column; line-height: 1.15; min-width: 0; }
+.panic b { font-family: var(--font-display); font-size: 1.05rem; letter-spacing: .04em; }
+.panic small { font-size: .72rem; font-weight: 600; opacity: .9; }
+.panic:active { transform: translateY(1px); }
+.panic.on { background: var(--bad); color: var(--bg); animation: panic-pulse 1s ease-in-out infinite; }
+@keyframes panic-pulse { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--bad) 30%, transparent); } }
+.ms button.p.on { background: var(--bad-soft); border-color: var(--bad); color: var(--bad); }
+@media (max-width: 560px) { .transport .panic { flex: 1 1 100%; justify-content: center; } }
+
+/* ---------- Painel "Cue atual" (progresso e próximos cues) ---------- */
+.now-card { --cue: var(--accent); --next: var(--muted); gap: 12px; border-left: 6px solid var(--cue); }
+.now-card.panic { box-shadow: inset 0 0 0 2px var(--bad); }
+.now-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.now-name { font-family: var(--font-display); font-weight: 800; font-size: clamp(1.4rem, 5vw, 2rem); line-height: 1.1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.now-rep { font: 700 .8rem var(--font-mono); border-radius: 99px; padding: 2px 8px; background: color-mix(in srgb, var(--cue) 22%, var(--surface)); }
+.now-rep[hidden] { display: none; }
+.now-meta { color: var(--muted); font-weight: 600; font-size: .9rem; font-variant-numeric: tabular-nums; }
+.now-bar { position: relative; height: 28px; border-radius: 8px; background: var(--surface-2); overflow: hidden; }
+.now-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: color-mix(in srgb, var(--cue) 72%, var(--surface-2)); }
+.now-zone { position: absolute; right: 0; top: 0; bottom: 0; z-index: 1; pointer-events: none;
+  background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--warn) 24%, transparent) 6px 12px); }
+.now-zone[hidden] { display: none; }
+.now-cells { position: absolute; inset: 0; display: flex; z-index: 2; pointer-events: none; }
+.now-cells i { flex: 1; border-right: 2px solid var(--bg); }
+.now-cells i:last-child { border-right: 0; }
+
+.now-next { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-radius: 10px;
+  background: color-mix(in srgb, var(--next) 12%, var(--surface-2)); border-left: 6px solid var(--next); }
+.now-next-kind { font: 700 .7rem var(--font-body); letter-spacing: .08em; color: var(--muted); }
+.now-next-name { font-family: var(--font-display); font-size: 1.3rem; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.now-next-when { font-weight: 600; font-size: .92rem; color: var(--muted); }
+.now-count { font: 800 clamp(2.6rem, 13vw, 3.8rem)/1 var(--font-display); min-width: 1ch; text-align: center; color: var(--next); font-variant-numeric: tabular-nums; }
+.now-count:empty { display: none; }
+
+/* a aproximação: longe → 2 compassos (âmbar suave) → 1 compasso (âmbar forte) → último tempo (vermelho piscando) */
+.now-card[data-level="soon"] .now-next { background: var(--warn-soft); border-left-color: var(--warn); }
+.now-card[data-level="soon"] .now-next-when, .now-card[data-level="soon"] .now-count { color: var(--warn); }
+.now-card[data-level="soon"] .now-zone, .now-card[data-level="near"] .now-zone, .now-card[data-level="now"] .now-zone { background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--warn) 42%, transparent) 6px 12px); }
+.now-card[data-level="near"] .now-next { background: var(--warn); border-left-color: var(--warn); color: var(--bg); }
+.now-card[data-level="near"] .now-next-kind, .now-card[data-level="near"] .now-next-when, .now-card[data-level="near"] .now-count { color: inherit; }
+.now-card[data-level="near"] .now-bar { box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 55%, transparent); }
+.now-card[data-level="now"] .now-next { background: var(--bad); border-left-color: var(--bad); color: var(--bg); animation: cue-blink .3s steps(2, start) infinite; }
+.now-card[data-level="now"] .now-next-kind, .now-card[data-level="now"] .now-next-when, .now-card[data-level="now"] .now-count { color: inherit; }
+.now-card[data-level="now"] .now-bar { box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 60%, transparent); }
+
+.radar { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.radar:not(:has(.radar-item:not([hidden]))) { display: none; }
+.radar-item { --cue: var(--muted); min-width: 0; padding: 6px 8px; border-radius: 8px; background: var(--surface-2); border-top: 4px solid var(--cue); }
+.radar-item[hidden] { display: none; }
+.radar-item.first { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--cue) 60%, transparent); }
+.radar-top { display: flex; justify-content: space-between; gap: 6px; font-size: .8rem; font-weight: 700; }
+.radar-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.radar-when { flex: none; color: var(--muted); font-weight: 600; font-variant-numeric: tabular-nums; }
+.radar-track { height: 6px; margin-top: 5px; border-radius: 99px; background: var(--surface); overflow: hidden; }
+.radar-track i { display: block; height: 100%; width: 0; background: var(--cue); border-radius: 99px; }
+
+.cue-flag.next { outline: 2px solid var(--cue); outline-offset: -2px; }
+.cue-flag.near { background: color-mix(in srgb, var(--cue) 60%, var(--surface)); animation: cue-blink .5s steps(2, start) infinite; }

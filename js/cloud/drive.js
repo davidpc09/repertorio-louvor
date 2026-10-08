@@ -153,6 +153,27 @@ export async function pastaDaVersao(song, version) {
   return vs;
 }
 
+/** Arquivos (não pastas) de uma pasta do Drive, fora da lixeira: [{ id, name, size }]. */
+export async function listarPasta(pastaId, ministryId) {
+  const out = [];
+  let pagina = '';
+  do {
+    const q = `'${pastaId}' in parents and mimeType != '${PASTA}' and trashed=false`;
+    const res = await g(`/files?q=${encodeURIComponent(q)}&fields=nextPageToken,files(id,name,size)&pageSize=200&spaces=drive${pagina ? '&pageToken=' + encodeURIComponent(pagina) : ''}`, { ministryId });
+    const j = await res.json();
+    for (const f of j.files || []) out.push({ id: f.id, name: f.name, size: Number(f.size) || 0 });
+    pagina = j.nextPageToken || '';
+  } while (pagina);
+  return out;
+}
+
+/** Manda para a lixeira do Drive (dá para recuperar por 30 dias), em vez de apagar de vez. */
+export async function paraLixeira(fileId, ministryId) {
+  try {
+    await g(`/files/${fileId}?fields=id`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }), ministryId });
+  } catch (e) { if (e.codigo !== 'sumiu') throw e; }
+}
+
 /** Envia um arquivo para a pasta, com progresso (0 a 1). Devolve o id no Drive. */
 export async function enviar(arquivo, pastaId, nome, aoProgredir, ministryId) {
   const t = await token(ministryId);

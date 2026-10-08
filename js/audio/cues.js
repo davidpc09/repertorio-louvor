@@ -184,6 +184,29 @@ export class CueController {
 
   // ---------- Ciclo (chamado pelo motor ~40×/s) ----------
   tick(p) {
+    this.autoTick(p);
+    this.panicTick(p);
+  }
+
+  /** Pânico ligado: descobre o instante exato do próximo cue e agenda a volta das faixas nele. */
+  panicTick(p) {
+    const e = this.engine;
+    const pn = e.panic;
+    if (!pn?.active || pn.restoreCtx != null || !e.playing) return;
+    const j = e.pending;
+    if (j) {
+      if (j.stop) return;                         // a música vai acabar: nada a religar
+      if (j.armed) e.panicOff(j.ctxTime);         // salto já travado: as faixas voltam no instante dele
+      return;                                     // ainda não travou: o motor trava ~0,2 s antes
+    }
+    // sem salto à vista: o próximo cue na ordem natural
+    const nxt = this.cues().find((c) => this.startOf(c) > p + 0.02);
+    if (!nxt) return;                             // sem cue pela frente: segue mudo até o fim
+    const secs = this.startOf(nxt) - p;
+    if (secs <= 0.25) e.panicOff(e.ctx.currentTime + secs);
+  }
+
+  autoTick(p) {
     const e = this.engine;
     if (e.pending) return;
     if (this.userNext) {
@@ -239,7 +262,87 @@ export class CueController {
     else if (t.type === 'map-repeat') this.repeatLeft = Math.max(1, this.repeatLeft - 1);
     else if (t.type === 'map-next') { this.mapIndex = t.index; this.repeatLeft = arr[t.index]?.repeats || 1; }
     else if (t.type === 'map-end') this.resetMap();
+    // chegou a um cue com o pânico ainda ligado (o agendamento exato perdeu a vez): religa agora
+    if (this.engine.panic?.active && this.engine.panic.restoreCtx == null && !j.stop) this.engine.panicOff();
     this.emit();
+  }
+
+  // ---------- Progresso e próximos cues (para a tela) ----------
+  /** Onde estamos dentro do cue atual: fração, compasso e tempo. null fora de qualquer cue. */
+  progress(p) {
+    if (p < 0) return null;
+    const cur = this.sectionAt(p);
+    if (!cur) return null;
+    const a = this.startOf(cur);
+    const b = this.endOf(cur);
+    const spb = 60 / (this.engine.bpm || 120);
+    const into = Math.max(0, p - a);
+    const bars = cur.endBar - cur.startBar + 1;
+    const bar = Math.min(bars, Math.floor(into / this.barLen + 1e-6) + 1);
+    const beat = Math.floor((into % this.barLen) / spb + 1e-6) + 1;
+    return { cue: cur, frac: Math.min(1, into / (b - a)), bar, bars, beat, secsLeft: Math.max(0, b - p) };
+  }
+
+  /**
+   * Próximos cues na ordem em que vão tocar: [{ cue, inSec, exact, kind }].
+   * O primeiro vem do salto já agendado (cue disparado, repetição, mapa) ou, sem salto, do próximo cue na ordem.
+   * Os seguintes seguem o mapa (se ligado) ou a ordem dos cues; o tempo deles é uma estimativa (exact: false).
+   * Quando a música vai terminar, o primeiro item é { end: true }.
+   */
+  upcoming(p, count = 3) {
+    const e = this.engine;
+    const list = this.cues();
+    const j = e.pending;
+    let first = null;
+    let tagIndex = null;
+    if (e.playing && j) {
+      const inSec = Math.max(0, e.timeToPending() ?? 0);
+      if (j.stop) return [{ cue: null, end: true, inSec, exact: true, kind: 'end' }];
+      const cue = list.find((c) => Math.abs(this.startOf(c) - j.toPos) < 1e-3) || this.find(j.tag?.id);
+      if (cue) { first = { cue, inSec, exact: true, kind: j.tag?.type || 'next' }; tagIndex = j.tag?.index ?? null; }
+    }
+    if (!first) {
+      const nxt = list.find((c) => this.startOf(c) > p + 0.02);
+      if (nxt) first = { cue: nxt, inSec: e.playing ? this.startOf(nxt) - p : null, exact: true, kind: 'next' };
+    }
+    if (!first) return [];
+    const out = [first];
+
+    const arr = this.arrangement();
+    let idx = -1;
+    if (this.mapOn && arr.length) {
+      if (tagIndex != null) idx = tagIndex;
+      else if (first.kind === 'map-repeat') idx = this.mapIndex;
+      else {
+        idx = arr.findIndex((s, i) => i >= this.mapIndex && s.sectionId === first.cue.id);
+        if (idx < 0) idx = arr.findIndex((s) => s.sectionId === first.cue.id);
+      }
+    }
+    let cur = first.cue;
+    let t = first.inSec;
+    let reps = first.kind === 'map-repeat' ? Math.max(1, this.repeatLeft - 1) : (idx >= 0 ? arr[idx].repeats || 1 : 1);
+    while (out.length < count) {
+      let next = null;
+      if (idx >= 0) { idx++; next = arr[idx] ? this.find(arr[idx].sectionId) : null; }
+      else { const i = list.findIndex((c) => c.id === cur.id); next = list[i + 1] || null; }
+      if (!next) break;
+      if (t != null) t += (this.endOf(cur) - this.startOf(cur)) * reps;
+      out.push({ cue: next, inSec: t, exact: false, kind: 'later' });
+      cur = next;
+      reps = idx >= 0 ? arr[idx].repeats || 1 : 1;
+    }
+    return out;
+  }
+
+  /** Estado do pânico para o botão: o que volta e quando. */
+  panicInfo() {
+    const e = this.engine;
+    if (!e.panic?.active) return null;
+    const spb = 60 / (e.bpm || 120);
+    const nxt = this.upcoming(e.position(), 1)[0];
+    if (!nxt || nxt.end) return { label: null, beats: null };
+    const beats = nxt.inSec == null ? null : Math.max(0, Math.ceil(nxt.inSec / spb - 0.05));
+    return { label: nxt.cue.name, beats };
   }
 
   // ---------- Estado para a tela ----------

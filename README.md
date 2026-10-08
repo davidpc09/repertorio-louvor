@@ -2,7 +2,7 @@
 
 App para o ministério de louvor: repertório de músicas, setlists, escala da equipe, relatórios e um player multipista com click. Funciona no iPhone, Android e computador, instalado pela tela inicial (PWA), e abre sem internet depois do primeiro acesso.
 
-**Versão 0.4:** login de verdade e dados compartilhados entre a equipe pelo Supabase, com convites por link, permissões por pessoa e agenda. A demonstração com dados de exemplo continua disponível na tela de login. A integração com o Google Drive (áudios compartilhados) é a próxima etapa.
+**Versão 0.6:** botão de pânico, painel de progresso do cue atual e conferência de arquivos repetidos no aparelho e no Drive. Antes disso: login de verdade e dados compartilhados entre a equipe pelo Supabase, com convites por link, permissões por pessoa, agenda e áudios das multipistas no Google Drive do ministério. A demonstração com dados de exemplo continua disponível na tela de login.
 
 ## Ligar a versão em nuvem (uma vez)
 
@@ -40,6 +40,9 @@ App para o ministério de louvor: repertório de músicas, setlists, escala da e
 | Agenda | Cultos (setlists) e eventos (ensaios, reuniões) num só lugar; filtro “Minhas escalas”; botões para adicionar ao Google Agenda ou baixar .ics (iPhone, Outlook), um por um ou todos |
 | Player | Multipistas sincronizadas, mixer (volume, mudo, solo, pan), click gerado no BPM com acento e contagem, click no lado L ou R, modo palco (música em mono no outro lado), partes por compasso com pular e repetir, escolha da saída de áudio onde o navegador permite |
 | Cues e mapa | Marcadores de cada parte no estilo dos locators do Ableton Live: disparo em tempo real quantizado (tempo, compasso, 2/4/8 compassos ou fim da parte), ação ao terminar (continuar, repetir, ir para outro cue, parar), mapa programado com repetições que o player segue sozinho, pads coloridos, atalhos 1–9 e suporte a pedal de virar página |
+| Pânico | Botão vermelho sempre visível no player (tecla P). Errou? Silencia as faixas na hora e mantém só o click. Quando o próximo cue chega, as faixas voltam sozinhas, no instante exato dele. Em cada canal do mixer, o botão **P** diz se o pânico silencia aquele canal (a guia fica de fora por padrão). Na volta, só religam os canais que já estavam ligados: quem estava mudo no mixer continua mudo. Tocar de novo no botão traz as faixas de volta na hora |
+| Cue atual | Painel no topo da aba Tocar: nome do cue, barra de progresso dividida em compassos, "A seguir" com o tempo que falta e radar dos próximos 3 cues. A cor avisa a aproximação: 2 compassos (âmbar), 1 compasso (âmbar forte com contagem em tempos), último tempo (vermelho piscando) |
+| Arquivos de áudio | Em Mais › Conferir arquivos de áudio: compara o aparelho com a pasta do Drive, mostra quantos arquivos há em cada lado e acha cópias repetidas ou sobrando. Limpa só depois de confirmar (o Drive vai para a lixeira). O app também não deixa adicionar de novo o mesmo arquivo na mesma música nem subir ao Drive um arquivo que já está na pasta |
 | Tempo 0 | Forma de onda de cada faixa, detecção automática do primeiro tempo, ajuste fino por toque ou de 10 em 10 ms, grade de tempos para conferir o alinhamento |
 | Offline | O app e as faixas de áudio ficam guardados no aparelho |
 

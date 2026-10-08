@@ -20,6 +20,7 @@ export class PlayerEngine {
     this.countInBars = 1;
     this.stageMode = false;
     this.pending = null; // salto agendado {atPos, toPos, stop, tag}: base dos cues, loops e do mapa
+    this.panic = { active: false, restoreCtx: null }; // pânico: faixas mudas, click segue (ver panicOn/panicOff)
     this.onTick = null;  // chamado a cada ciclo (o controlador de cues agenda os saltos aqui)
     this.onJump = null;  // chamado quando um salto agendado acontece
     this.playing = false;
@@ -96,6 +97,7 @@ export class PlayerEngine {
     if (this.ctx && !t.gain) this.#wireTrack(t);
     else if (t.gain && t.routedGuide !== !!t.guide) this.#routeTrack(t);
     this.updateMix();
+    if (this.panic.active) this.#applyPanic(); // faixa nova ou canal marcado/desmarcado durante o pânico
     return t;
   }
 
@@ -103,14 +105,20 @@ export class PlayerEngine {
     const t = this.tracks.get(id);
     if (!t) return;
     try { t.gain?.disconnect(); } catch { /* ok */ }
+    try { t.pgain?.disconnect(); } catch { /* ok */ }
     this.tracks.delete(id);
   }
 
+  // Cadeia de cada faixa: gain (volume/mute/solo do mixer) → pgain (só o pânico) → panner.
+  // O pânico mexe apenas no pgain: assim o mute/solo que o músico já deixou no mixer não é tocado,
+  // e quando o pânico acaba voltam exatamente os canais que estavam ligados antes.
   #wireTrack(t) {
     const ctx = this.ctx;
     t.gain = ctx.createGain();
+    t.pgain = ctx.createGain();
     t.panner = ctx.createStereoPanner();
-    t.gain.connect(t.panner);
+    t.gain.connect(t.pgain);
+    t.pgain.connect(t.panner);
     this.#routeTrack(t);
   }
 
@@ -170,6 +178,8 @@ export class PlayerEngine {
   async play(pos = this.pausedPos, { countIn = true } = {}) {
     await this.resume();
     this.#stopAll();
+    // Trocou de posição no meio do pânico: o retorno agendado não vale mais; o controlador agenda de novo.
+    if (this.panic.active && this.panic.restoreCtx != null) { this.panic.restoreCtx = null; this.#applyPanic(); }
     const t0 = this.ctx.currentTime + 0.08;
     const ci = countIn && this.countInBars > 0 ? this.countInBars * this.beats * this.spb : 0;
     this.segments = [];
@@ -204,7 +214,58 @@ export class PlayerEngine {
     clearInterval(this.timer);
     this.#stopAll();
     this.segments = [];
+    if (this.panic.active) { this.panic = { active: false, restoreCtx: null }; this.#applyPanic(); } // parou: o pânico acaba
     this.onState?.();
+  }
+
+  // ---------- Pânico ----------
+  // Errou? Silencia as faixas na hora e deixa só o click rolando. Quando o próximo cue chega, as faixas
+  // voltam sozinhas, no instante exato do cue (quem decide o instante é o CueController).
+
+  /** O canal é silenciado pelo pânico? Padrão: todos, menos a guia (que guarda os avisos de voz). */
+  #panicTarget(t) { return t.panicMute ?? !t.guide; }
+
+  get panicActive() { return !!this.panic.active; }
+
+  /** Liga o pânico. Só faz sentido com a música tocando. */
+  panicOn() {
+    if (!this.ctx || !this.playing) return false;
+    this.panic = { active: true, restoreCtx: null };
+    this.#applyPanic();
+    this.onState?.();
+    return true;
+  }
+
+  /**
+   * Desliga o pânico. Com atCtx (relógio de áudio, no futuro) as faixas voltam exatamente nesse instante;
+   * sem ele, voltam agora.
+   */
+  panicOff(atCtx = null) {
+    if (!this.panic.active) return;
+    if (atCtx != null && atCtx > this.ctx.currentTime + 0.003) this.panic.restoreCtx = atCtx;
+    else this.panic = { active: false, restoreCtx: null };
+    this.#applyPanic();
+    this.onState?.();
+  }
+
+  #applyPanic() {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const p = this.panic;
+    for (const t of this.tracks.values()) {
+      const g = t.pgain?.gain;
+      if (!g) continue;
+      const silent = p.active && this.#panicTarget(t);
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(g.value, now);
+      if (!silent) { g.linearRampToValueAtTime(1, now + 0.01); continue; }
+      g.linearRampToValueAtTime(0, now + 0.008); // some em 8 ms, sem estalo
+      if (p.restoreCtx != null) {
+        const at = Math.max(p.restoreCtx, now + 0.02);
+        g.setValueAtTime(0, at - 0.001);
+        g.linearRampToValueAtTime(1, at + 0.001); // volta junto com o primeiro som do cue
+      }
+    }
   }
 
   async seek(pos) {
@@ -280,6 +341,12 @@ export class PlayerEngine {
     if (!this.playing) return;
     const now = this.ctx.currentTime;
     const ahead = now + LOOKAHEAD;
+
+    // 0) O retorno do pânico já está agendado nos ganhos; aqui só encerra o estado quando o instante passa
+    if (this.panic.active && this.panic.restoreCtx != null && now >= this.panic.restoreCtx) {
+      this.panic = { active: false, restoreCtx: null };
+      this.onState?.();
+    }
 
     // 1) Saltos agendados (cues, loop, mapa): o controlador decide, o motor executa no instante exato
     if (this.pending && this.pending.armed && this.pending.ctxTime <= now) {

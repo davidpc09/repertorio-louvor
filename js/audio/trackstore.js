@@ -72,6 +72,29 @@ export async function hasTrack(versionId, trackId) {
   } catch { return false; }
 }
 
+/** Tudo o que está guardado neste aparelho: [{ versionId, trackId, size }] (não carrega o conteúdo). */
+export async function listStored() {
+  const db = await openDb();
+  if (!db) return [];
+  return new Promise((resolve) => {
+    const out = [];
+    try {
+      const t = db.transaction(STORE, 'readonly');
+      const req = t.objectStore(STORE).openCursor();
+      req.onsuccess = () => {
+        const c = req.result;
+        if (!c) return;
+        const [versionId, ...rest] = String(c.key).split('/');
+        out.push({ versionId, trackId: rest.join('/'), size: c.value?.size || 0 });
+        c.continue();
+      };
+      t.oncomplete = () => resolve(out);
+      t.onerror = () => resolve(out);
+      t.onabort = () => resolve(out);
+    } catch { resolve(out); }
+  });
+}
+
 /** Quais faixas de uma versão já estão aqui. Devolve um Set de ids. */
 export async function presentTracks(versionId, trackIds) {
   const out = new Set();

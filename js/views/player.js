@@ -119,7 +119,7 @@ export function renderPlayer(versionId) {
     status.textContent = missing.length ? `Arquivos que não estão neste aparelho: ${missing.join(', ')}. Carregue-os de novo na aba Faixas.` : (v.tracks.length ? `${v.tracks.length} faixas prontas${prefs.economy ? ' · modo economia de memória' : ''}` : '');
     if (loadedAny || missing.length) drawTab();
   }
-  const trackMeta = (t) => ({ id: t.id, name: t.name, offset: t.offsetSec || 0, volume: t.volume ?? 1, pan: t.pan || 0, mute: !!t.mute, solo: !!t.solo, guide: !!t.guide });
+  const trackMeta = (t) => ({ id: t.id, name: t.name, offset: t.offsetSec || 0, volume: t.volume ?? 1, pan: t.pan || 0, mute: !!t.mute, solo: !!t.solo, guide: !!t.guide, panicMute: t.panicMute });
 
   // ---------- cabeçalho ----------
   const playBtn = el('button', { class: 'play', 'aria-label': 'Tocar', onclick: togglePlay }, icon('play'));
@@ -127,6 +127,33 @@ export function renderPlayer(versionId) {
   const dots = el('div', { class: 'beat-dots', 'aria-hidden': 'true' });
   const drawDots = () => { clear(dots); for (let i = 0; i < engine.beats; i++) dots.appendChild(el('i')); };
   drawDots();
+
+  // ---------- Pânico ----------
+  // Errou? Um toque silencia as faixas e deixa só o click. As faixas voltam sozinhas no próximo cue.
+  const panicLabel = el('b', null, 'PÂNICO');
+  const panicSub = el('small', null, 'muta as faixas, click segue');
+  const panicBtn = el('button', { class: 'panic', 'aria-label': 'Pânico: silenciar as faixas e manter o click até o próximo cue', title: 'Tecla P', onclick: togglePanic }, icon('panic', 22), el('span', { class: 'panic-text' }, panicLabel, panicSub));
+  function togglePanic() {
+    if (!engine.playing) { toast('O pânico funciona com a música tocando.', 'bad'); return; }
+    if (engine.panic.active) engine.panicOff(); // segundo toque: as faixas voltam agora
+    else if (engine.panicOn()) navigator.vibrate?.(40);
+    updatePanicBtn();
+  }
+  function updatePanicBtn() {
+    const on = engine.panic.active && engine.playing;
+    let label = 'PÂNICO';
+    let sub = 'muta as faixas, click segue';
+    if (on) {
+      const info = cues.panicInfo();
+      label = 'MUDO · click ativo';
+      if (!info || !info.label) sub = 'sem próximo cue: mudo até o fim · toque para voltar';
+      else sub = `volta em ${info.label}${info.beats == null ? '' : info.beats <= 0 ? ' agora' : ` em ${info.beats} ${info.beats === 1 ? 'tempo' : 'tempos'}`} · toque para voltar já`;
+    }
+    if (panicLabel.textContent !== label) panicLabel.textContent = label;
+    if (panicSub.textContent !== sub) panicSub.textContent = sub;
+    panicBtn.classList.toggle('on', on);
+    panicBtn.setAttribute('aria-pressed', String(on));
+  }
 
   async function togglePlay() {
     try {
@@ -142,6 +169,7 @@ export function renderPlayer(versionId) {
   engine.onState = () => {
     clear(playBtn).appendChild(icon(engine.playing ? 'pause' : 'play'));
     playBtn.setAttribute('aria-label', engine.playing ? 'Pausar' : 'Tocar');
+    updatePanicBtn();
   };
   engine.onState();
   engine.onEnded = () => toast('Fim da música');
@@ -174,6 +202,7 @@ export function renderPlayer(versionId) {
       el('button', { class: 'btn', 'aria-label': 'Próximo compasso', onclick: () => jumpBars(1) }, icon('next')),
       clock, dots,
       el('span', { style: { flex: 1 } }),
+      panicBtn,
       status));
 
   // ---------- abas ----------
@@ -202,6 +231,7 @@ export function renderPlayer(versionId) {
   let timeline = null; let headEl = null; let loopEl = null; let targetEl = null;
   let padEls = []; let flagEls = []; let stepEls = [];
   let nowLabel = null; let nextLabel = null; let cancelBtn = null;
+  let now = null; // painel "Cue atual" (ver nowCard)
 
   function drawTab() {
     clear(tabBody);
@@ -280,6 +310,7 @@ export function renderPlayer(versionId) {
     });
 
     return [
+      nowCard(),
       el('div', { class: 'stack', style: { gap: '6px' } }, timeline,
         el('div', { class: 'row small muted', style: { justifyContent: 'space-between' } }, el('span', null, 'Toque nas bandeiras para disparar o cue · na faixa para ir ao compasso'), el('span', { class: 'num' }, fmtDuration(dur)))),
       el('section', { class: 'card stack cue-panel' },
@@ -298,6 +329,144 @@ export function renderPlayer(versionId) {
       mixer(),
       v.tracks.length ? null : el('div', { class: 'notice info' }, 'Sem multipistas: o click toca sozinho no BPM da música, e os cues funcionam do mesmo jeito. Para adicionar as faixas, use a aba “Faixas e tempo 0”.'),
     ];
+  }
+
+  // ---------- Painel "Cue atual": progresso e aproximação dos próximos ----------
+  // Mostra onde estamos dentro do cue (barra dividida em compassos), o que vem a seguir e quanto falta.
+  // A cor do painel muda conforme o próximo cue se aproxima: longe → perto (2 compassos) → quase (1 compasso) → agora.
+  const setText = (node, text) => { if (node && node.textContent !== text) node.textContent = text; };
+  const plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
+
+  function nowCard() {
+    now = {
+      card: el('section', { class: 'card now-card', 'aria-label': 'Cue atual e próximos cues', dataset: { level: 'idle' } }),
+      cueId: null, bars: 0,
+    };
+    now.name = el('div', { class: 'now-name' });
+    now.rep = el('span', { class: 'now-rep', hidden: true });
+    now.meta = el('div', { class: 'now-meta' });
+    now.cells = el('div', { class: 'now-cells', 'aria-hidden': 'true' });
+    now.fill = el('div', { class: 'now-fill' });
+    now.zone = el('div', { class: 'now-zone', 'aria-hidden': 'true' });
+    now.bar = el('div', { class: 'now-bar', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-label': 'Progresso do cue atual' }, now.cells, now.zone, now.fill);
+    now.nextKind = el('span', { class: 'now-next-kind' });
+    now.nextName = el('b', { class: 'now-next-name' });
+    now.nextWhen = el('span', { class: 'now-next-when' });
+    now.count = el('div', { class: 'now-count', 'aria-hidden': 'true' });
+    now.next = el('div', { class: 'now-next' }, el('div', { class: 'stack', style: { gap: '2px', minWidth: 0 } }, now.nextKind, now.nextName, now.nextWhen), now.count);
+    now.radar = el('div', { class: 'radar' });
+    now.radarItems = [];
+    now.card.append(el('div', { class: 'now-head' }, el('div', { class: 'row', style: { gap: '8px', minWidth: 0 } }, now.name, now.rep), now.meta), now.bar, now.next, now.radar);
+    return now.card;
+  }
+
+  /** Redesenha as divisões da barra quando o cue muda (um segmento por compasso). */
+  function buildCells(bars) {
+    clear(now.cells);
+    if (bars > 1 && bars <= 48) for (let i = 0; i < bars; i++) now.cells.appendChild(el('i'));
+    now.bars = bars;
+  }
+
+  function refreshNowCard() {
+    if (!now?.card.isConnected) return;
+    const p = engine.position();
+    const bl = barLen();
+    const spb = engine.spb;
+    const list = sortedCues();
+    const pr = cues.progress(p);
+    const ups = cues.upcoming(p, 3);
+    const nxt = ups[0] || null;
+    const colorIdx = (c) => list.findIndex((x) => x.id === c.id);
+
+    // --- cue atual
+    if (pr) {
+      const ci = colorIdx(pr.cue);
+      now.card.style.setProperty('--cue', colorOf(pr.cue, ci));
+      if (now.cueId !== pr.cue.id || now.bars !== pr.bars) { now.cueId = pr.cue.id; buildCells(pr.bars); }
+      const arr = cues.arrangement();
+      const step = cues.mapOn ? arr[cues.mapIndex] : null;
+      const reps = step && step.sectionId === pr.cue.id ? step.repeats || 1 : 1;
+      setText(now.name, pr.cue.name);
+      now.rep.hidden = reps <= 1;
+      if (reps > 1) setText(now.rep, `${reps - cues.repeatLeft + 1}/${reps}`);
+      setText(now.meta, `compasso ${pr.bar} de ${pr.bars} · tempo ${pr.beat}`);
+      now.fill.style.width = (pr.frac * 100).toFixed(2) + '%';
+      now.bar.setAttribute('aria-valuenow', String(Math.round(pr.frac * 100)));
+      // faixa de aviso: os 2 últimos compassos do cue
+      now.zone.style.width = (Math.min(2, pr.bars) / pr.bars) * 100 + '%';
+      now.zone.hidden = false;
+    } else {
+      now.cueId = null;
+      if (now.bars) buildCells(0);
+      now.card.style.removeProperty('--cue');
+      setText(now.name, p < 0 ? 'Contagem…' : engine.playing ? 'Fora dos cues' : 'Parado');
+      now.rep.hidden = true;
+      setText(now.meta, p < 0 ? `faltam ${Math.ceil(-p / spb)} ${Math.ceil(-p / spb) === 1 ? 'tempo' : 'tempos'}` : '');
+      now.fill.style.width = '0%';
+      now.zone.hidden = true;
+    }
+
+    // --- o que vem a seguir e a aproximação
+    let level = 'idle';
+    let beatsLeft = null;
+    if (nxt) {
+      beatsLeft = nxt.inSec == null ? null : Math.max(0, Math.ceil(nxt.inSec / spb - 0.05));
+      const nxtColor = nxt.cue ? colorOf(nxt.cue, colorIdx(nxt.cue)) : 'var(--muted)';
+      now.next.style.setProperty('--next', nxtColor);
+      const kind = nxt.end ? 'FIM DA MÚSICA'
+        : nxt.kind === 'user' ? 'NA FILA'
+          : nxt.kind === 'loop' || nxt.kind === 'map-repeat' || (nxt.kind === 'follow' && pr && nxt.cue.id === pr.cue.id) ? 'REPETE'
+            : 'A SEGUIR';
+      setText(now.nextKind, kind);
+      setText(now.nextName, nxt.end ? 'Termina' : nxt.cue.name);
+      if (beatsLeft == null) setText(now.nextWhen, 'ao tocar');
+      else if (beatsLeft <= 0) setText(now.nextWhen, 'agora');
+      else if (beatsLeft < engine.beats) setText(now.nextWhen, `em ${plural(beatsLeft, 'tempo', 'tempos')}`);
+      else {
+        const b = Math.floor(beatsLeft / engine.beats); const r = beatsLeft % engine.beats;
+        setText(now.nextWhen, `em ${plural(b, 'compasso', 'compassos')}${r ? ` e ${plural(r, 'tempo', 'tempos')}` : ''}`);
+      }
+      if (engine.playing && nxt.inSec != null) {
+        const barsLeft = nxt.inSec / bl;
+        level = nxt.inSec <= spb * 1.05 ? 'now' : barsLeft <= 1 ? 'near' : barsLeft <= 2 ? 'soon' : 'far';
+      }
+      // contagem grande nos últimos 4 tempos (e nos últimos 8, se couberem)
+      setText(now.count, engine.playing && beatsLeft != null && beatsLeft > 0 && beatsLeft <= 8 ? String(beatsLeft) : '');
+    } else {
+      setText(now.nextKind, engine.playing ? 'A SEGUIR' : '');
+      setText(now.nextName, engine.playing ? 'Nenhum cue pela frente' : list[0] ? `Começa em ${list[0].name}` : 'Sem cues');
+      setText(now.nextWhen, '');
+      setText(now.count, '');
+    }
+    if (now.card.dataset.level !== level) now.card.dataset.level = level;
+    now.card.classList.toggle('panic', engine.panic.active && engine.playing);
+
+    // --- radar: os próximos 3 cues, cada um com uma barrinha que enche conforme chega perto (janela de 4 compassos)
+    const wanted = engine.playing ? ups : [];
+    while (now.radarItems.length < wanted.length) {
+      const name = el('span', { class: 'radar-name' }); const when = el('span', { class: 'radar-when' }); const fill = el('i');
+      const item = el('div', { class: 'radar-item' }, el('div', { class: 'radar-top' }, name, when), el('div', { class: 'radar-track' }, fill));
+      now.radar.appendChild(item); now.radarItems.push({ item, name, when, fill });
+    }
+    now.radarItems.forEach((r, i) => {
+      const u = wanted[i];
+      r.item.hidden = !u;
+      if (!u) return;
+      r.item.style.setProperty('--cue', u.cue ? colorOf(u.cue, colorIdx(u.cue)) : 'var(--muted)');
+      setText(r.name, u.end ? 'Fim' : u.cue.name);
+      const bars = u.inSec == null ? null : u.inSec / bl;
+      setText(r.when, bars == null ? '' : `${u.exact ? '' : '~'}${bars < 1 ? '< 1 comp.' : Math.round(bars) + ' comp.'}`);
+      const near = bars == null ? 0 : Math.max(0, Math.min(1, 1 - bars / 4));
+      r.fill.style.width = (near * 100).toFixed(1) + '%';
+      r.item.classList.toggle('first', i === 0);
+    });
+
+    // bandeira do próximo cue na régua do mapa acende quando ele se aproxima
+    const nextId = nxt && !nxt.end ? nxt.cue.id : null;
+    for (const f of flagEls) {
+      f.classList.toggle('next', f.dataset.id === nextId && level !== 'idle');
+      f.classList.toggle('near', f.dataset.id === nextId && (level === 'near' || level === 'now'));
+    }
   }
 
   /** Duração mostrada no mapa: a do áudio, ou até o último cue quando só há click. */
@@ -519,9 +688,11 @@ export function renderPlayer(versionId) {
           el('li', null, el('b', null, 'Quantização'), ': ao disparar um cue com a música tocando, o salto espera o próximo tempo, compasso ou fim da parte. O botão pisca enquanto espera; Esc cancela.'),
           el('li', null, el('b', null, 'Ao terminar'), ' funciona como as Follow Actions: continuar, repetir a parte, ir para outro cue ou parar.'),
           el('li', null, el('b', null, 'Mapa'), ': a ordem programada da música. Disparar um cue manualmente tem prioridade e o mapa segue a partir dele.'),
-          el('li', null, el('b', null, 'Atalhos'), ': Espaço toca/pausa · 1–9 e 0 disparam cues · → ou Page Down próximo cue · ← ou Page Up anterior · L repete a parte · M liga o mapa · Esc cancela. Pedais de virar página (Bluetooth) costumam enviar Page Down/Up e funcionam direto.'))),
+          el('li', null, el('b', null, 'Atalhos'), ': Espaço toca/pausa · 1–9 e 0 disparam cues · → ou Page Down próximo cue · ← ou Page Up anterior · L repete a parte · M liga o mapa · P pânico · Esc cancela. Pedais de virar página (Bluetooth) costumam enviar Page Down/Up e funcionam direto.'))),
     ];
   }
+
+  const panicOf = (t) => t.panicMute ?? !t.guide;
 
   function mixer() {
     const strips = [];
@@ -542,13 +713,15 @@ export function renderPlayer(versionId) {
         el('div', { class: 'tname' }, t.name, el('small', null, et?.buffer ? (t.guide ? 'guia · ' : '') + fmtDuration(et.buffer.duration) : 'arquivo não carregado')),
         el('div', { class: 'ms' },
           el('button', { class: 'm' + (t.mute ? ' on' : ''), 'aria-label': 'Mudo ' + t.name, 'aria-pressed': String(!!t.mute), onclick: (e) => { upd({ mute: !t.mute }); e.currentTarget.classList.toggle('on', !!t.mute); } }, 'M'),
-          el('button', { class: 's' + (t.solo ? ' on' : ''), 'aria-label': 'Solo ' + t.name, 'aria-pressed': String(!!t.solo), onclick: (e) => { upd({ solo: !t.solo }); e.currentTarget.classList.toggle('on', !!t.solo); } }, 'S')),
+          el('button', { class: 's' + (t.solo ? ' on' : ''), 'aria-label': 'Solo ' + t.name, 'aria-pressed': String(!!t.solo), onclick: (e) => { upd({ solo: !t.solo }); e.currentTarget.classList.toggle('on', !!t.solo); } }, 'S'),
+          el('button', { class: 'p' + (panicOf(t) ? ' on' : ''), 'aria-label': 'Silenciar ' + t.name + ' no pânico', 'aria-pressed': String(panicOf(t)), title: panicOf(t) ? 'O pânico silencia este canal (toque para deixar tocando)' : 'O pânico NÃO silencia este canal (toque para silenciar)', onclick: (e) => { const nv = !panicOf(t); upd({ panicMute: nv }); e.currentTarget.classList.toggle('on', nv); e.currentTarget.setAttribute('aria-pressed', String(nv)); } }, 'P')),
         el('label', { class: 'vol' }, 'Volume', (() => { const r = el('input', { type: 'range', min: 0, max: 1.5, step: 0.01, value: t.volume ?? 1 }); r.addEventListener('input', () => { t.volume = Number(r.value); engine.setTrack(trackMeta(t)); }); r.addEventListener('change', () => upd({ volume: Number(r.value) })); return r; })()),
         el('label', { class: 'pan' }, prefs.stage ? 'Pan (modo palco: mono)' : 'Pan', (() => { const r = el('input', { type: 'range', min: -1, max: 1, step: 0.05, value: t.pan || 0, disabled: prefs.stage }); r.addEventListener('input', () => { t.pan = Number(r.value); engine.setTrack(trackMeta(t)); }); r.addEventListener('change', () => upd({ pan: Number(r.value) })); return r; })())));
     }
     return el('section', { class: 'stack', style: { gap: '8px' } },
       el('div', { class: 'row', style: { justifyContent: 'space-between' } }, el('h2', null, 'Mixer'),
         el('label', { class: 'row small', for: 'stage-mode' }, el('input', { type: 'checkbox', id: 'stage-mode', checked: prefs.stage, onchange: (e) => { prefs.stage = e.target.checked; savePrefs(); applyPrefs(); drawTab(); } }), 'Modo palco')),
+      el('p', { class: 'small muted' }, el('b', null, 'P'), ' = canal que o botão de pânico silencia (a guia fica de fora por padrão). O click nunca é silenciado. Na volta, só religam os canais que já estavam ligados: quem está mudo aqui continua mudo.'),
       prefs.stage ? el('p', { class: 'small muted' }, prefs.side === 'C' ? 'Escolha o lado L ou R para o click: no modo palco a música vai em mono para o lado oposto.' : `Click${v.tracks.some((t) => t.guide) ? ' e guia' : ''} no lado ${prefs.side === 'L' ? 'esquerdo' : 'direito'}; música em mono no lado ${prefs.side === 'L' ? 'direito' : 'esquerdo'}. Use um cabo P2 → 2 P10 para mandar cada lado a um canal da mesa.`) : null,
       el('div', { class: 'mixer' }, strips));
   }
@@ -760,7 +933,11 @@ export function renderPlayer(versionId) {
     engine.pause();
     await engine.resume().catch(() => {});
     let n = 0;
+    const vistos = new Set(v.tracks.map((t) => `${t.fileName || ''}|${t.size || 0}`));
     for (const f of files) {
+      // mesmo arquivo (nome e tamanho) já cadastrado nesta versão: não cria uma segunda cópia
+      if (vistos.has(`${f.name}|${f.size}`)) { toast(`“${f.name}” já está nesta música; não adicionei de novo.`, 'bad'); continue; }
+      vistos.add(`${f.name}|${f.size}`);
       status.textContent = `Processando ${f.name}…`;
       const id = uid('t');
       try {
@@ -875,6 +1052,8 @@ export function renderPlayer(versionId) {
     if (dots.children.length !== engine.beats) drawDots();
     [...dots.children].forEach((d, i) => { d.className = engine.playing && i === beatIdx ? 'on' + (i === 0 ? ' down' : '') : ''; });
     refreshCueUI();
+    refreshNowCard();
+    updatePanicBtn();
     raf = requestAnimationFrame(frame);
   }
 
@@ -883,6 +1062,7 @@ export function renderPlayer(versionId) {
     if (document.querySelector('.modal-backdrop')) return;
     const list = sortedCues();
     if (e.code === 'Space') { e.preventDefault(); togglePlay(); return; }
+    if (e.key === 'p' || e.key === 'P') { e.preventDefault(); togglePanic(); return; }
     if (/^Digit[0-9]$/.test(e.code) || /^Numpad[0-9]$/.test(e.code)) {
       const n = Number(e.code.slice(-1));
       const c = list[n === 0 ? 9 : n - 1];
