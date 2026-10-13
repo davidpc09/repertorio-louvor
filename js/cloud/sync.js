@@ -235,7 +235,8 @@ async function pull({ full = false, checkIds: forceIds = false } = {}) {
     const inMin = `ministerio_id=${api.inList(mins)}`;
     const checkIds = !full && (forceIds || pollCount % ID_CHECK_EVERY === 0);
     const jobs = {
-      musicas: api.select('musicas', `select=*&${inMin}${since('musicas')}`),
+      // a view esconde os links das pastas de VS de quem não é administrador
+      musicas: api.select('musicas_app', `select=*&${inMin}${since('musicas')}`),
       setlists: api.select('setlists', `select=*&${inMin}${since('setlists')}`),
       execucoes: api.select('execucoes', `select=*&${inMin}${since('execucoes')}`),
       eventos: api.select('eventos', `select=*&${inMin}${since('eventos')}`),

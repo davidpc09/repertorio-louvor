@@ -19,6 +19,7 @@ App para o ministério de louvor: repertório de músicas, setlists, escala da e
 ### Segurança
 - Cada pessoa só vê os ministérios dos quais participa. O que cada membro pode fazer (músicas, escala, eventos) é conferido pelo banco (Row Level Security), não só pelo app. Setlists, equipe e convites são só dos administradores.
 - O membro só consegue confirmar ou recusar a própria escala e enviar sugestões.
+- O link da pasta de VS de cada versão (e os ids das pastas no Drive) só chega aos administradores: o banco entrega as músicas aos membros sem esses campos, e o que um membro editor envia não consegue apagá-los nem trocá-los.
 - Um ministério nunca fica sem administrador.
 - Sem internet, o app abre com a última cópia e envia as alterações quando a conexão voltar.
 - "Esqueci a senha" depende de um servidor de e-mail próprio (SMTP) no Supabase. Até lá, só funciona para os e-mails da equipe do projeto Supabase.
