@@ -147,7 +147,7 @@ export function renderSongDetail(id) {
       el('div', { class: 'row', style: { marginTop: '8px' } }, v.singerKeys.map((sk) => el('button', { class: 'chip', onclick: () => { detailState.key = sk.key; go('/musica/' + song.id); } }, `${store.userName(sk.userId)}: ${sk.key}`)))) : null,
 
     el('div', { class: 'row' },
-      link('VS / multipista', v?.linkVS, 'folder'),
+      store.isAdmin() ? link('VS / multipista', v?.linkVS, 'folder') : null,
       link('Ouvir instrumental', v?.linkInstrumental, 'headphones'),
       link('Ouvir vozes', v?.linkVozes, 'headphones'),
       link('Referência', v?.youtube, 'play')),
@@ -272,7 +272,7 @@ export function renderSongEdit(id) {
         field('Compasso', bind('timeSig', select(['4/4', '3/4', '6/8', '2/4', '12/8'], v.timeSig))),
         field('Duração', durMin, 'minutos:segundos')),
       el('div', { class: 'form-grid' },
-        field('Link VS / multipista', bind('linkVS', input({ type: 'url', value: v.linkVS, placeholder: 'https://drive.google.com/…' }))),
+        store.isAdmin() ? field('Link VS / multipista', bind('linkVS', input({ type: 'url', value: v.linkVS, placeholder: 'https://drive.google.com/…' })), 'Só administradores veem este link.') : null,
         field('Link instrumental', bind('linkInstrumental', input({ type: 'url', value: v.linkInstrumental, placeholder: 'https://drive.google.com/…' }))),
         field('Link vozes', bind('linkVozes', input({ type: 'url', value: v.linkVozes, placeholder: 'https://drive.google.com/…' }))),
         field('Referência (YouTube/Spotify)', bind('youtube', input({ type: 'url', value: v.youtube, placeholder: 'https://youtube.com/…' })))),

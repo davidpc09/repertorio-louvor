@@ -1,5 +1,5 @@
 -- =====================================================================
--- Repertório Louvor — banco de dados (Supabase / PostgreSQL)  ·  versão 4
+-- Repertório Louvor — banco de dados (Supabase / PostgreSQL)  ·  versão 5
 -- Como usar: Supabase → SQL Editor → New query → cole este arquivo inteiro → Run.
 -- Pode rodar de novo sem perder dados: só cria o que ainda não existe e
 -- recria funções e permissões.
@@ -9,7 +9,8 @@
 --   • administradores podem tudo; cada membro recebe permissões específicas:
 --     player, musicas_adicionar, musicas_editar, musicas_remover, escala, eventos;
 --   • setlists, equipe e convites: só administradores (escala: quem tem permissão);
---   • membro sempre pode responder a própria escala e enviar sugestões.
+--   • membro sempre pode responder a própria escala e enviar sugestões;
+--   • links das pastas de VS (e ids das pastas no Drive): só administradores.
 -- Convites: o administrador gera um link secreto (enviado por WhatsApp);
 -- quem abre o link e cria a conta entra no ministério com o papel definido.
 -- =====================================================================
@@ -238,6 +239,65 @@ create policy musicas_editar on public.musicas for update to authenticated
 create policy musicas_remover on public.musicas for delete to authenticated
   using (public.tem_permissao(ministerio_id, 'musicas_remover'));
 
+-- ---------- Links das pastas de VS: só administradores ----------
+-- O link VS de cada versão e os ids das pastas no Drive ficam dentro de musicas.dados.
+-- Membros não leem a tabela diretamente (só id, ministério e datas); leem a view
+-- musicas_app, que entrega esses campos apenas para administradores.
+create or replace function public.musica_sem_links(d jsonb) returns jsonb
+language sql immutable set search_path = public as $$
+  select case when jsonb_typeof(d->'versions') = 'array'
+    then (d - 'driveFolderId') || jsonb_build_object('versions', (
+      select coalesce(jsonb_agg(v - array['linkVS', 'driveFolderId', 'driveVsId'] order by i), '[]'::jsonb)
+      from jsonb_array_elements(d->'versions') with ordinality as t(v, i)))
+    else d - 'driveFolderId' end;
+$$;
+
+create or replace view public.musicas_app with (security_barrier = on) as
+  select id, ministerio_id,
+         case when public.e_admin(ministerio_id) then dados else public.musica_sem_links(dados) end as dados,
+         atualizado_em, atualizado_por
+  from public.musicas
+  where public.e_membro(ministerio_id);
+
+-- Quem não é administrador e edita uma música não vê esses campos, então o que ele
+-- envia não pode apagá-los nem trocá-los: o servidor mantém o que já estava guardado.
+-- Os ids de pasta que um editor descobre ao enviar faixas só entram se ainda não havia nenhum.
+create or replace function public.proteger_links_vs() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+  antigos jsonb := '{}';
+  enviados jsonb := '{}';
+  novas jsonb := '[]';
+  v jsonb;
+  k text;
+begin
+  if auth.uid() is null or public.e_admin(new.ministerio_id) then return new; end if;
+  if jsonb_typeof(new.dados->'versions') = 'array' then
+    select coalesce(jsonb_object_agg(x->>'id', jsonb_strip_nulls(jsonb_build_object(
+             'driveFolderId', x->'driveFolderId', 'driveVsId', x->'driveVsId'))), '{}')
+      into enviados from jsonb_array_elements(new.dados->'versions') x where x ? 'id';
+  end if;
+  if tg_op = 'UPDATE' and jsonb_typeof(old.dados->'versions') = 'array' then
+    select coalesce(jsonb_object_agg(x->>'id', jsonb_strip_nulls(jsonb_build_object(
+             'linkVS', x->'linkVS', 'driveFolderId', x->'driveFolderId', 'driveVsId', x->'driveVsId'))), '{}')
+      into antigos from jsonb_array_elements(old.dados->'versions') x where x ? 'id';
+  end if;
+  k := case when tg_op = 'UPDATE' then old.dados->>'driveFolderId' end;
+  if k is null then k := new.dados->>'driveFolderId'; end if;
+  new.dados := public.musica_sem_links(new.dados);
+  if jsonb_typeof(new.dados->'versions') = 'array' then
+    for v in select x from jsonb_array_elements(new.dados->'versions') with ordinality as t(x, i) order by i loop
+      novas := novas || jsonb_build_array(v || coalesce(enviados->(v->>'id'), '{}') || coalesce(antigos->(v->>'id'), '{}'));
+    end loop;
+    new.dados := jsonb_set(new.dados, '{versions}', novas);
+  end if;
+  if k is not null then new.dados := new.dados || jsonb_build_object('driveFolderId', k); end if;
+  return new;
+end $$;
+drop trigger if exists tg_links_vs on public.musicas;
+create trigger tg_links_vs before insert or update on public.musicas
+  for each row execute function public.proteger_links_vs();
+
 create policy eventos_ler on public.eventos for select to authenticated
   using (public.e_membro(ministerio_id));
 create policy eventos_editar on public.eventos for all to authenticated
@@ -393,7 +453,12 @@ create policy drive_status_ler on public.drive_contas for select to authenticate
 revoke all on all tables in schema public from anon;
 grant usage on schema public to authenticated;
 grant select, insert, update, delete on public.perfis, public.ministerios, public.membros, public.convites,
-  public.musicas, public.setlists, public.execucoes, public.sugestoes, public.eventos to authenticated;
+  public.setlists, public.execucoes, public.sugestoes, public.eventos to authenticated;
+-- músicas: o conteúdo (dados) só é lido pela view musicas_app, que esconde os links de VS de quem não é admin
+revoke select on public.musicas from authenticated;
+grant select (id, ministerio_id, atualizado_em, atualizado_por) on public.musicas to authenticated;
+grant insert, update, delete on public.musicas to authenticated;
+grant select on public.musicas_app to authenticated;
 -- a tabela da conexão fica fora do alcance da API; só a view de status é liberada
 revoke all on public.drive_contas from authenticated, anon;
 grant select (ministerio_id, conta_email, pasta_raiz_id, conectado_em) on public.drive_contas to authenticated;
@@ -403,6 +468,6 @@ grant execute on function public.garantir_perfil(text), public.criar_ministerio(
   public.aceitar_convite(text), public.responder_escala(text, text, text), public.sair_do_ministerio(text),
   public.salvar_escala(text, jsonb), public.tem_permissao(text, text),
   public.e_membro(text), public.e_admin(text), public.pode_editar_musicas(text),
-  public.compartilha_ministerio(uuid), public.e_admin_de(uuid) to authenticated;
+  public.compartilha_ministerio(uuid), public.e_admin_de(uuid), public.musica_sem_links(jsonb) to authenticated;
 -- ver_convite também pode ser chamado antes do login (só mostra o nome do ministério)
 grant execute on function public.ver_convite(text) to anon;
