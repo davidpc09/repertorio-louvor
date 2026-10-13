@@ -233,9 +233,9 @@ export function renderSongEdit(id) {
       v.sections.forEach((p, i) => {
         sectionsBox.appendChild(el('div', { class: 'row' },
           (() => { const a = input({ value: p.name, style: { flex: '2 1 120px', width: 'auto' }, 'aria-label': 'Nome da parte', list: 'sec-names' }); a.addEventListener('input', () => { p.name = a.value; }); return a; })(),
-          (() => { const a = el('input', { type: 'number', min: 1, value: p.startBar, style: { width: '80px' }, 'aria-label': 'Compasso inicial' }); a.addEventListener('input', () => { p.startBar = Number(a.value) || 1; }); return a; })(),
+          (() => { const a = el('input', { type: 'number', min: 1, value: p.startBar, style: { width: '80px' }, 'aria-label': 'Compasso inicial' }); a.addEventListener('input', () => { p.startBar = Number(a.value) || 1; delete p.startSec; }); return a; })(),
           el('span', { class: 'muted' }, 'até'),
-          (() => { const a = el('input', { type: 'number', min: 1, value: p.endBar, style: { width: '80px' }, 'aria-label': 'Compasso final' }); a.addEventListener('input', () => { p.endBar = Number(a.value) || p.startBar; }); return a; })(),
+          (() => { const a = el('input', { type: 'number', min: 1, value: p.endBar, style: { width: '80px' }, 'aria-label': 'Compasso final' }); a.addEventListener('input', () => { p.endBar = Number(a.value) || p.startBar; delete p.endSec; }); return a; })(),
           el('button', { class: 'icon-btn', 'aria-label': 'Remover parte', onclick: () => { v.sections.splice(i, 1); drawSections(); } }, '×')));
       });
       sectionsBox.appendChild(el('button', { class: 'btn small', onclick: () => {

@@ -1,6 +1,8 @@
 // Cues e mapa da música, no estilo dos locators do Ableton Live.
 //
 // - Cada cue marca o início de uma parte (compasso). A parte vai até o compasso final informado.
+// - Cues importados (Ableton, CSV) ou reposicionados guardam o tempo exato em segundos (startSec/endSec,
+//   sem arredondar). Nesse caso o compasso é só rótulo; editar o compasso volta o cue para a grade.
 // - Disparar um cue durante a música NÃO corta na hora: o salto fica na fila e acontece no próximo
 //   ponto de quantização (próximo tempo, compasso, 2/4/8 compassos ou fim da parte), como a
 //   "Global Quantization" do Ableton. O botão do cue pisca enquanto espera.
@@ -56,16 +58,20 @@ export class CueController {
   // ---------- Geometria ----------
   get v() { return this.getVersion(); }
   get barLen() { return beatsPerBar(this.v.timeSig) * (60 / (this.engine.bpm || 120)); }
-  cues() { return [...(this.v.sections || [])].sort((a, b) => a.startBar - b.startBar); }
+  cues() { return [...(this.v.sections || [])].sort((a, b) => this.startOf(a) - this.startOf(b)); }
   find(id) { return (this.v.sections || []).find((s) => s.id === id) || null; }
-  startOf(cue) { return barToSeconds(cue.startBar, this.engine.bpm, this.v.timeSig); }
-  endOf(cue) { return barToSeconds(cue.endBar + 1, this.engine.bpm, this.v.timeSig); }
+  startOf(cue) { return cue.startSec ?? barToSeconds(cue.startBar, this.engine.bpm, this.v.timeSig); }
+  endOf(cue) {
+    const end = cue.endSec ?? barToSeconds(cue.endBar + 1, this.engine.bpm, this.v.timeSig);
+    const start = this.startOf(cue);
+    return end > start ? end : start + this.barLen * Math.max(1, cue.endBar - cue.startBar + 1);
+  }
 
   /** Parte que contém a posição p (em segundos a partir do tempo 0). */
   sectionAt(p) {
     if (p < 0) return null;
-    const bar = Math.floor(p / this.barLen + 1e-6) + 1;
-    return this.cues().find((c) => bar >= c.startBar && bar <= c.endBar) || null;
+    const q = p + 1e-6;
+    return this.cues().find((c) => q >= this.startOf(c) && q < this.endOf(c)) || null;
   }
 
   /** Próximo ponto de quantização depois da posição p. */
@@ -277,7 +283,7 @@ export class CueController {
     const b = this.endOf(cur);
     const spb = 60 / (this.engine.bpm || 120);
     const into = Math.max(0, p - a);
-    const bars = cur.endBar - cur.startBar + 1;
+    const bars = Math.max(1, Math.round((b - a) / this.barLen));
     const bar = Math.min(bars, Math.floor(into / this.barLen + 1e-6) + 1);
     const beat = Math.floor((into % this.barLen) / spb + 1e-6) + 1;
     return { cue: cur, frac: Math.min(1, into / (b - a)), bar, bars, beat, secsLeft: Math.max(0, b - p) };
