@@ -638,37 +638,22 @@ export function renderPlayer(versionId) {
     else importCuesFromCSV(file);
   }
 
-  /** Lê "1.234", "-0,5", "-4c" (compassos) ou "-0:01.250" e devolve segundos. */
-  function lerDeslocamento(txt) {
-    const t = String(txt || '').trim().replace(/\s+/g, '').replace(',', '.');
-    let m = t.match(/^([+-]?)(\d*\.?\d+)c(omp(assos?)?)?$/i);
-    if (m) return (m[1] === '-' ? -1 : 1) * Number(m[2]) * barLen();
-    m = t.match(/^([+-]?)(\d+):(\d{1,2}(?:\.\d+)?)$/);
-    if (m) return (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
-    m = t.match(/^[+-]?(\d*\.?\d+)$/);
-    return m ? Number(t) : null;
-  }
-
   /**
    * Move todos os cues juntos (o VS exportado nem sempre começa no tempo 0 do projeto do Ableton).
-   * Sugere a distância que leva o primeiro cue até o cursor.
+   * Escolhe-se o compasso do 1º cue: ele vai para o início exato desse compasso e os outros
+   * andam a mesma distância, mantendo o espaçamento entre eles.
    */
   function reposicionarCues() {
     const list = sortedCues();
     if (!list.length) return;
     const first = cues.startOf(list[0]);
-    const p = Math.max(0, engine.position());
-    const sugestao = p > 0 ? (p - first).toFixed(3) : '0';
-    const r = prompt(
-      `Mover todos os cues quanto? Negativo adianta, positivo atrasa.\n`
-      + `Aceita segundos com milissegundos (ex.: -1.234), minutos (ex.: 0:02.500) ou compassos (ex.: -4c).\n\n`
-      + (p > 0 ? `A sugestão leva o primeiro cue (${list[0].name}) para a posição atual do cursor.` : 'Dica: pare o cursor no início real da primeira parte e abra de novo para receber a distância exata.'),
-      sugestao);
+    const atual = secondsToBar(first + 1e-6, engine.bpm, v.timeSig);
+    const r = prompt(`Em qual compasso começa o 1º cue (${list[0].name})? Hoje ele está no compasso ${atual}.\nOs outros cues se movem junto.`, String(atual));
     if (r == null) return;
-    const d = lerDeslocamento(r);
-    if (d == null || !Number.isFinite(d)) { toast('Não entendi o valor. Use, por exemplo, -1.234 ou -4c.', 'bad'); return; }
+    const bar = Number(String(r).trim());
+    if (!Number.isInteger(bar) || bar < 1) { toast('Informe um número de compasso inteiro, a partir de 1.', 'bad'); return; }
+    const d = barToSeconds(bar, engine.bpm, v.timeSig) - first;
     if (Math.abs(d) < 1e-9) return;
-    if (first + d < 0) { toast(`O primeiro cue ficaria antes do início da música (${fmtTimestamp(first)} ${d < 0 ? '−' : '+'} ${Math.abs(d).toFixed(3)} s).`, 'bad'); return; }
     const novos = list.map((c) => ({ id: c.id, s: cues.startOf(c) + d, e: cues.endOf(c) + d }));
     saveVersion(v.id, (x) => {
       for (const n of novos) {
@@ -680,7 +665,7 @@ export function renderPlayer(versionId) {
         c.endBar = Math.max(c.startBar, secondsToBar(n.e - 1e-6, engine.bpm, v.timeSig));
       }
     });
-    toast(`Cues movidos ${d > 0 ? '+' : '−'}${Math.abs(d).toFixed(3)} s`);
+    toast(`1º cue no compasso ${bar}; os outros acompanharam`);
     cues.refreshAuto();
     agendarSalvarCues();
     drawTab();
@@ -828,7 +813,7 @@ export function renderPlayer(versionId) {
               saveVersion(v.id, (x) => { const l = sortedCues(); l.forEach((c, i) => { if (!l[i + 1]) return; c.endBar = Math.max(c.startBar, l[i + 1].startBar - 1); if (c.startSec != null || l[i + 1].startSec != null) c.endSec = cues.startOf(l[i + 1]); else delete c.endSec; }); });
               cues.refreshAuto(); toast('Fins ajustados'); drawTab();
             } }, 'Ajustar fins'),
-            list.length ? el('button', { class: 'btn small ghost', title: 'Mover todos os cues juntos, com precisão de milissegundos (quando o VS não começa no tempo 0 do Ableton)', onclick: () => reposicionarCues() }, 'Reposicionar todos') : null) : null),
+            list.length ? el('button', { class: 'btn small ghost', title: 'Escolher o compasso do 1º cue e mover os outros junto (quando o VS não começa no tempo 0 do Ableton)', onclick: () => reposicionarCues() }, 'Reposicionar todos') : null) : null),
         el('p', { class: 'small muted' }, 'Cada cue marca o início de uma parte, em compassos contados a partir do tempo 0. As teclas 1 a 9 e 0 disparam os dez primeiros.'),
         list.length ? el('div', { class: 'row', style: { flexWrap: 'wrap', gap: '6px' } },
           el('button', { class: 'btn small ghost', title: 'Baixar os cues como CSV (formato Ableton / timestamps.me)', onclick: () => exportarCuesCSV() }, icon('download', 16), 'Exportar CSV'),
