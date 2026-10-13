@@ -26,6 +26,7 @@ const SHELL = [
   './js/audio/engine.js',
   './js/audio/analysis.js',
   './js/audio/cues.js',
+  './js/audio/ableton.js',
   './js/audio/trackstore.js',
   './js/views/login.js',
   './js/views/home.js',

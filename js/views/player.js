@@ -8,6 +8,7 @@ import { putTrack, getTrack, deleteTrack } from '../audio/trackstore.js';
 import * as tracksync from '../cloud/tracksync.js';
 import { beatsPerBar, barToSeconds, secondsToBar } from '../music.js';
 import { CueController, QUANTIZE, FOLLOW, CUE_COLORS } from '../audio/cues.js';
+import { readAbletonSet } from '../audio/ableton.js';
 
 const engine = new PlayerEngine();
 let loadedVersion = null;
@@ -523,27 +524,28 @@ export function renderPlayer(versionId) {
   function addCueAtPlayhead() {
     const bar = Math.max(1, Math.floor(Math.max(0, engine.position()) / barLen() + 0.0001) + 1);
     if (v.sections.some((c) => c.startBar === bar)) { toast(`Já existe um cue no compasso ${bar}.`, 'bad'); return; }
+    const at = barToSeconds(bar, engine.bpm, v.timeSig);
     saveVersion(v.id, (x) => {
-      const list = [...x.sections].sort((a, b) => a.startBar - b.startBar);
-      const prev = [...list].reverse().find((c) => c.startBar < bar);
-      const next = list.find((c) => c.startBar > bar);
-      const endBar = next ? next.startBar - 1 : Math.max(bar + 7, prev ? prev.endBar : bar);
-      if (prev && prev.endBar >= bar) prev.endBar = bar - 1;
-      x.sections.push({ id: uid('p'), name: `Cue ${x.sections.length + 1}`, startBar: bar, endBar, color: CUE_COLORS[x.sections.length % CUE_COLORS.length], follow: 'next' });
-      x.sections.sort((a, b) => a.startBar - b.startBar);
+      const list = sortedCues();
+      const prev = [...list].reverse().find((c) => cues.startOf(c) < at - 1e-6);
+      const next = list.find((c) => cues.startOf(c) > at + 1e-6);
+      const exato = (c) => c.startSec != null || c.endSec != null;
+      const endBar = next ? Math.max(bar, next.startBar - 1) : Math.max(bar + 7, prev ? prev.endBar : bar);
+      if (prev && cues.endOf(prev) > at) { prev.endBar = Math.max(prev.startBar, bar - 1); if (exato(prev)) prev.endSec = at; }
+      const novo = { id: uid('p'), name: `Cue ${x.sections.length + 1}`, startBar: bar, endBar, color: CUE_COLORS[x.sections.length % CUE_COLORS.length], follow: 'next' };
+      if (next && exato(next)) novo.endSec = cues.startOf(next);
+      x.sections.push(novo);
     });
     toast(`Cue criado no compasso ${bar}`);
     agendarSalvarCues();
     drawTab();
   }
 
-  /** Importa cues de um CSV do timestamps.me (formato Ableton locators). */
+  /** Importa cues de um CSV do timestamps.me (formato Ableton locators). Guarda o tempo exato, com milissegundos. */
   function importCuesFromCSV(file) {
     const reader = new FileReader();
     reader.onload = () => {
       const lines = reader.result.split(/\r?\n/).filter((l) => l.trim());
-      const bpm = v.bpm || 120;
-      const ts = v.timeSig || '4/4';
       const parsed = [];
       for (const line of lines) {
         // Formato: (vazio),NOME,H:MM:SS.mmm  ou  NOME,H:MM:SS.mmm
@@ -555,39 +557,133 @@ export function renderPlayer(versionId) {
         if (!name || !timeStr) continue;
         const tm = timeStr.match(/^(\d+):(\d+):(\d+(?:[.,]\d+)?)$/);
         if (!tm) continue;
-        const secs = Number(tm[1]) * 3600 + Number(tm[2]) * 60 + Number(tm[3].replace(',', '.'));
-        const bar = secondsToBar(secs, bpm, ts);
-        if (bar < 1) continue;
-        parsed.push({ name, bar });
+        const sec = Number(tm[1]) * 3600 + Number(tm[2]) * 60 + Number(tm[3].replace(',', '.'));
+        if (!(sec >= 0)) continue;
+        parsed.push({ name, sec, bar: secondsToBar(sec, engine.bpm, v.timeSig) });
       }
       if (!parsed.length) { toast('Nenhum cue encontrado no arquivo. Use o formato CSV do timestamps.me (Ableton locators).', 'bad'); return; }
-      // Elimina duplicatas de compasso
-      const seen = new Set();
-      const unique = parsed.filter((p) => { if (seen.has(p.bar)) return false; seen.add(p.bar); return true; });
-      unique.sort((a, b) => a.bar - b.bar);
-
-      const existentes = v.sections.length;
-      const acao = existentes ? 'substituir' : 'importar';
-      if (existentes && !confirm(`Já existem ${existentes} cues. Substituir pelos ${unique.length} do arquivo?`)) return;
-
-      saveVersion(v.id, (x) => {
-        if (existentes) { x.sections = []; x.arrangement = []; }
-        for (let i = 0; i < unique.length; i++) {
-          const endBar = unique[i + 1] ? unique[i + 1].bar - 1 : unique[i].bar + 7;
-          x.sections.push({
-            id: uid('p'), name: unique[i].name,
-            startBar: unique[i].bar, endBar,
-            color: CUE_COLORS[i % CUE_COLORS.length], follow: 'next',
-          });
-        }
-        x.sections.sort((a, b) => a.startBar - b.startBar);
-      });
-      toast(`${unique.length} cues importados do arquivo`);
-      cues.refreshAuto();
-      agendarSalvarCues();
-      drawTab();
+      aplicarCuesImportados(parsed, 'do arquivo');
     };
     reader.readAsText(file);
+  }
+
+  /**
+   * Importa os locators direto de um projeto do Ableton Live (.als), sem passar pelo timestamps.me.
+   * Cada cue recebe o tempo exato em segundos (sem arredondar), calculado pelo mapa de andamento do projeto.
+   */
+  async function importCuesFromALS(file) {
+    let set;
+    try {
+      set = await readAbletonSet(await file.arrayBuffer());
+    } catch (e) {
+      toast('Não consegui ler o projeto do Ableton: ' + e.message, 'bad');
+      return;
+    }
+    if (!set.locators.length) { toast('O projeto não tem locators. No Ableton, marque as partes com Create › Add Locator e salve de novo.', 'bad'); return; }
+    // No app o tempo do compasso é a figura de baixo da fórmula; no Ableton o BPM é sempre em semínimas.
+    const den = Number(set.timeSig.split('/')[1]) || 4;
+    const bpmApp = set.bpm ? Number((set.bpm * (den / 4)).toFixed(3)) : null;
+    const muda = [];
+    if (bpmApp && bpmApp !== v.bpm) muda.push(`BPM ${v.bpm || '—'} → ${bpmApp}`);
+    if (set.timeSig !== (v.timeSig || '4/4')) muda.push(`compasso ${v.timeSig || '4/4'} → ${set.timeSig}`);
+    const usarTempo = muda.length && (!v.bpm || confirm(`O projeto do Ableton está em ${set.bpm} BPM, ${set.timeSig}. Atualizar esta versão (${muda.join(', ')})?\n\nOs cues entram no tempo exato do Ableton de qualquer jeito; o BPM vale para o click e a quantização.`));
+    const ok = aplicarCuesImportados(set.locators.map((l) => ({ name: l.name, sec: l.sec, bar: l.bar })), 'do Ableton', (x) => {
+      if (!usarTempo) return;
+      if (bpmApp) x.bpm = bpmApp;
+      x.timeSig = set.timeSig;
+    });
+    if (!ok) return;
+    if (usarTempo) {
+      engine.setTempo(v.bpm || 120, beatsPerBar(v.timeSig));
+      bpmInput.value = v.bpm || 120;
+      drawTab();
+    }
+    if (set.tempoAutomated) toast('O projeto tem automação de BPM: os cues seguem o tempo real, mas o click e a quantização usam um BPM só.');
+  }
+
+  /** Grava a lista [{ name, sec, bar }] como os cues da versão, com o tempo exato (pede confirmação se já houver cues). */
+  function aplicarCuesImportados(parsed, origem, extra) {
+    // Elimina cues no mesmo instante (1 ms)
+    const seen = new Set();
+    const unique = [...parsed].sort((a, b) => a.sec - b.sec)
+      .filter((p) => { const k = Math.round(p.sec * 1000); if (seen.has(k)) return false; seen.add(k); return true; });
+
+    const existentes = v.sections.length;
+    if (existentes && !confirm(`Já existem ${existentes} cues. Substituir pelos ${unique.length} ${origem}?`)) return false;
+
+    saveVersion(v.id, (x) => {
+      if (existentes) { x.sections = []; x.arrangement = []; }
+      for (let i = 0; i < unique.length; i++) {
+        const cur = unique[i];
+        const nxt = unique[i + 1];
+        const startBar = Math.max(1, cur.bar);
+        x.sections.push({
+          id: uid('p'), name: cur.name,
+          startBar, endBar: nxt ? Math.max(startBar, nxt.bar - 1) : startBar + 7,
+          startSec: cur.sec, endSec: nxt ? nxt.sec : undefined,
+          color: CUE_COLORS[i % CUE_COLORS.length], follow: 'next',
+        });
+      }
+      extra?.(x);
+    });
+    toast(`${unique.length} cues importados ${origem}`);
+    cues.refreshAuto();
+    agendarSalvarCues();
+    drawTab();
+    return true;
+  }
+
+  function importarCues(file) {
+    if (/\.als$/i.test(file.name)) importCuesFromALS(file);
+    else importCuesFromCSV(file);
+  }
+
+  /** Lê "1.234", "-0,5", "-4c" (compassos) ou "-0:01.250" e devolve segundos. */
+  function lerDeslocamento(txt) {
+    const t = String(txt || '').trim().replace(/\s+/g, '').replace(',', '.');
+    let m = t.match(/^([+-]?)(\d*\.?\d+)c(omp(assos?)?)?$/i);
+    if (m) return (m[1] === '-' ? -1 : 1) * Number(m[2]) * barLen();
+    m = t.match(/^([+-]?)(\d+):(\d{1,2}(?:\.\d+)?)$/);
+    if (m) return (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
+    m = t.match(/^[+-]?(\d*\.?\d+)$/);
+    return m ? Number(t) : null;
+  }
+
+  /**
+   * Move todos os cues juntos (o VS exportado nem sempre começa no tempo 0 do projeto do Ableton).
+   * Sugere a distância que leva o primeiro cue até o cursor.
+   */
+  function reposicionarCues() {
+    const list = sortedCues();
+    if (!list.length) return;
+    const first = cues.startOf(list[0]);
+    const p = Math.max(0, engine.position());
+    const sugestao = p > 0 ? (p - first).toFixed(3) : '0';
+    const r = prompt(
+      `Mover todos os cues quanto? Negativo adianta, positivo atrasa.\n`
+      + `Aceita segundos com milissegundos (ex.: -1.234), minutos (ex.: 0:02.500) ou compassos (ex.: -4c).\n\n`
+      + (p > 0 ? `A sugestão leva o primeiro cue (${list[0].name}) para a posição atual do cursor.` : 'Dica: pare o cursor no início real da primeira parte e abra de novo para receber a distância exata.'),
+      sugestao);
+    if (r == null) return;
+    const d = lerDeslocamento(r);
+    if (d == null || !Number.isFinite(d)) { toast('Não entendi o valor. Use, por exemplo, -1.234 ou -4c.', 'bad'); return; }
+    if (Math.abs(d) < 1e-9) return;
+    if (first + d < 0) { toast(`O primeiro cue ficaria antes do início da música (${fmtTimestamp(first)} ${d < 0 ? '−' : '+'} ${Math.abs(d).toFixed(3)} s).`, 'bad'); return; }
+    const novos = list.map((c) => ({ id: c.id, s: cues.startOf(c) + d, e: cues.endOf(c) + d }));
+    saveVersion(v.id, (x) => {
+      for (const n of novos) {
+        const c = x.sections.find((y) => y.id === n.id);
+        if (!c) continue;
+        c.startSec = n.s;
+        c.endSec = n.e;
+        c.startBar = secondsToBar(n.s + 1e-6, engine.bpm, v.timeSig);
+        c.endBar = Math.max(c.startBar, secondsToBar(n.e - 1e-6, engine.bpm, v.timeSig));
+      }
+    });
+    toast(`Cues movidos ${d > 0 ? '+' : '−'}${Math.abs(d).toFixed(3)} s`);
+    cues.refreshAuto();
+    agendarSalvarCues();
+    drawTab();
   }
 
   // ---------- Exportar cues (formato Ableton / timestamps.me) ----------
@@ -601,17 +697,14 @@ export function renderPlayer(versionId) {
   }
 
   /** CSV no mesmo formato do import: (vazio),NOME,H:MM:SS.mmm */
-  function cuesToCSV(version) {
-    const bpm = version.bpm || 120;
-    const ts = version.timeSig || '4/4';
-    const list = [...(version.sections || [])].sort((a, b) => a.startBar - b.startBar);
-    return list.map((c) => `,${String(c.name || '').replace(/[\r\n,]/g, ' ').trim()},${fmtTimestamp(barToSeconds(c.startBar, bpm, ts))}`).join('\r\n') + '\r\n';
+  function cuesToCSV() {
+    return sortedCues().map((c) => `,${String(c.name || '').replace(/[\r\n,]/g, ' ').trim()},${fmtTimestamp(cues.startOf(c))}`).join('\r\n') + '\r\n';
   }
 
   /** Baixa o CSV dos cues para o aparelho. */
   function exportarCuesCSV() {
     if (!v.sections?.length) { toast('Não há cues para exportar.', 'bad'); return; }
-    const csv = cuesToCSV(v);
+    const csv = cuesToCSV();
     const nome = `${v.name || 'Cues'} - ${song.title}.csv`.replace(/[\\/:*?"<>|]/g, '-');
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -628,7 +721,7 @@ export function renderPlayer(versionId) {
     let st = { conectado: false };
     try { st = await tracksync.conectado(song.ministryId); } catch { /* offline */ }
     if (!st.conectado) { if (!silencioso) toast('Conecte o Google Drive em Mais › Google Drive primeiro.', 'bad'); return; }
-    const csv = cuesToCSV(v);
+    const csv = cuesToCSV();
     try {
       if (!silencioso) status.textContent = 'Salvando cues no Drive…';
       const fileId = await tracksync.enviarCues(song, v, csv, v.driveCuesFileId);
@@ -663,14 +756,16 @@ export function renderPlayer(versionId) {
       const name = el('input', { type: 'text', value: c.name, list: 'cue-names', 'aria-label': 'Nome do cue', disabled: !canEdit });
       name.addEventListener('change', () => edit(c.id, { name: name.value.trim() || c.name }));
       const start = el('input', { type: 'number', min: 1, value: c.startBar, 'aria-label': 'Compasso inicial', disabled: !canEdit, style: { width: '74px' } });
-      start.addEventListener('change', () => { edit(c.id, { startBar: Math.max(1, Number(start.value) || 1) }); saveVersion(v.id, (x) => x.sections.sort((a, b) => a.startBar - b.startBar)); drawTab(); });
+      // mudar o compasso à mão devolve o cue para a grade de compassos (descarta o tempo exato)
+      start.addEventListener('change', () => { edit(c.id, { startBar: Math.max(1, Number(start.value) || 1), startSec: undefined }); drawTab(); });
       const end = el('input', { type: 'number', min: 1, value: c.endBar, 'aria-label': 'Compasso final', disabled: !canEdit, style: { width: '74px' } });
-      end.addEventListener('change', () => { edit(c.id, { endBar: Math.max(c.startBar, Number(end.value) || c.startBar) }); drawTab(); });
+      end.addEventListener('change', () => { edit(c.id, { endBar: Math.max(c.startBar, Number(end.value) || c.startBar), endSec: undefined }); drawTab(); });
       return el('div', { class: 'cue-row', style: { '--cue': colorOf(c, i) } },
         el('span', { class: 'cue-key', title: 'Tecla de atalho' }, keyLabel(i) || '·'),
         el('div', { class: 'cue-row-main' },
           el('div', { class: 'row' }, name,
-            el('span', { class: 'row small muted', style: { gap: '4px' } }, 'c.', start, 'até', end)),
+            el('span', { class: 'row small muted', style: { gap: '4px' } }, 'c.', start, 'até', end),
+            c.startSec != null ? el('span', { class: 'small muted', style: { fontFamily: 'var(--font-mono)' }, title: 'Tempo exato do cue' }, fmtTimestamp(c.startSec)) : null),
           el('div', { class: 'row' }, el('span', { class: 'small muted' }, 'Ao terminar'), followSel, colorSel)),
         el('div', { class: 'row', style: { gap: '4px' } },
           el('button', { class: 'btn small', title: 'Disparar', onclick: () => cues.launch(c.id) }, icon('play', 14)),
@@ -720,18 +815,20 @@ export function renderPlayer(versionId) {
         el('div', { class: 'card-head' }, el('h2', null, `Cues (${list.length})`),
           canEdit ? el('div', { class: 'row', style: { flexWrap: 'wrap' } },
             el('button', { class: 'btn small', onclick: () => addCueAtPlayhead() }, icon('plus', 16), 'Cue no compasso atual'),
-            (() => { const inp = el('input', { type: 'file', accept: '.csv,.txt', hidden: true, onchange: () => { if (inp.files[0]) importCuesFromCSV(inp.files[0]); inp.value = ''; } }); return el('button', { class: 'btn small', onclick: () => inp.click() }, icon('upload', 16), 'Importar CSV (Ableton)'); })(),
+            (() => { const inp = el('input', { type: 'file', accept: '.als,.csv,.txt', hidden: true, onchange: () => { if (inp.files[0]) importarCues(inp.files[0]); inp.value = ''; } }); return el('button', { class: 'btn small', title: 'Projeto do Ableton Live (.als) ou CSV do timestamps.me', onclick: () => inp.click() }, icon('upload', 16), 'Importar do Ableton (.als ou CSV)'); })(),
             el('button', { class: 'btn small', onclick: () => {
               const last = list[list.length - 1];
               const startBar = last ? last.endBar + 1 : 1;
-              saveVersion(v.id, (x) => { x.sections.push({ id: uid('p'), name: x.sections.length ? 'Nova parte' : 'Intro', startBar, endBar: startBar + 7, color: CUE_COLORS[x.sections.length % CUE_COLORS.length], follow: 'next' }); });
+              const startSec = last && last.endSec != null ? cues.endOf(last) : undefined;
+              saveVersion(v.id, (x) => { x.sections.push({ id: uid('p'), name: x.sections.length ? 'Nova parte' : 'Intro', startBar, endBar: startBar + 7, startSec, color: CUE_COLORS[x.sections.length % CUE_COLORS.length], follow: 'next' }); });
               agendarSalvarCues();
               drawTab();
             } }, 'Cue no fim'),
             el('button', { class: 'btn small ghost', title: 'Cada parte termina um compasso antes do próximo cue', onclick: () => {
-              saveVersion(v.id, (x) => { const l = [...x.sections].sort((a, b) => a.startBar - b.startBar); l.forEach((c, i) => { if (l[i + 1]) c.endBar = Math.max(c.startBar, l[i + 1].startBar - 1); }); });
+              saveVersion(v.id, (x) => { const l = sortedCues(); l.forEach((c, i) => { if (!l[i + 1]) return; c.endBar = Math.max(c.startBar, l[i + 1].startBar - 1); if (c.startSec != null || l[i + 1].startSec != null) c.endSec = cues.startOf(l[i + 1]); else delete c.endSec; }); });
               cues.refreshAuto(); toast('Fins ajustados'); drawTab();
-            } }, 'Ajustar fins')) : null),
+            } }, 'Ajustar fins'),
+            list.length ? el('button', { class: 'btn small ghost', title: 'Mover todos os cues juntos, com precisão de milissegundos (quando o VS não começa no tempo 0 do Ableton)', onclick: () => reposicionarCues() }, 'Reposicionar todos') : null) : null),
         el('p', { class: 'small muted' }, 'Cada cue marca o início de uma parte, em compassos contados a partir do tempo 0. As teclas 1 a 9 e 0 disparam os dez primeiros.'),
         list.length ? el('div', { class: 'row', style: { flexWrap: 'wrap', gap: '6px' } },
           el('button', { class: 'btn small ghost', title: 'Baixar os cues como CSV (formato Ableton / timestamps.me)', onclick: () => exportarCuesCSV() }, icon('download', 16), 'Exportar CSV'),
@@ -740,7 +837,7 @@ export function renderPlayer(versionId) {
         list.length ? el('div', { class: 'cue-list' }, rows) : el('p', { class: 'muted' }, 'Nenhum cue ainda.')),
       el('section', { class: 'card stack' },
         el('div', { class: 'card-head' }, el('h2', null, 'Mapa da música'),
-          canEdit && list.length ? el('button', { class: 'btn small ghost', onclick: () => { saveVersion(v.id, (x) => { x.arrangement = [...x.sections].sort((a, b) => a.startBar - b.startBar).map((c) => ({ id: uid('m'), sectionId: c.id, repeats: 1 })); }); cues.refreshAuto(); drawTab(); } }, 'Ordem dos cues') : null),
+          canEdit && list.length ? el('button', { class: 'btn small ghost', onclick: () => { saveVersion(v.id, (x) => { x.arrangement = sortedCues().map((c) => ({ id: uid('m'), sectionId: c.id, repeats: 1 })); }); cues.refreshAuto(); drawTab(); } }, 'Ordem dos cues') : null),
         el('p', { class: 'small muted' }, 'A sequência que o player segue sozinho quando “Seguir o mapa” está ligado. Cada passo pode repetir. Os saltos acontecem no fim de cada parte, no compasso exato.'),
         arr.length ? el('div', { class: 'stack', style: { gap: '6px' } }, mapRows) : el('p', { class: 'muted small' }, 'Mapa vazio.'),
         canEdit && list.length ? el('div', { class: 'row' }, addSel, el('button', { class: 'btn small', onclick: () => { saveVersion(v.id, (x) => { (x.arrangement ||= []).push({ id: uid('m'), sectionId: addSel.value, repeats: 1 }); }); cues.refreshAuto(); drawTab(); } }, icon('plus', 16), 'Adicionar passo')) : null,
